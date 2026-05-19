@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+finance_tracker/data/gmail_token.pickle
+finance_tracker/data/finance.db
+finance_tracker/data/credentials.json
+*.egg-info/
+.env

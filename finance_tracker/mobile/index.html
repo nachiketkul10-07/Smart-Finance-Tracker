@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#6C5CE7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Smart Finance Tracker — Your intelligent personal finance companion">
+  <title>Smart Finance Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ═══ SPLASH SCREEN ═══ -->
+  <div id="splash" class="splash">
+    <div class="splash-icon">💰</div>
+    <div class="splash-title">Smart Finance Tracker</div>
+    <div class="splash-sub">Loading...</div>
+  </div>
+
+  <!-- ═══ AUTH SCREEN ═══ -->
+  <div id="auth-screen" class="screen" style="display:none">
+    <div class="auth-container">
+      <div class="auth-logo">💰</div>
+      <h1 class="auth-title">Smart Finance<br>Tracker</h1>
+      <p class="auth-sub">Your intelligent finance companion</p>
+
+      <div class="tabs" id="auth-tabs">
+        <button class="tab active" data-tab="login">Login</button>
+        <button class="tab" data-tab="register">Register</button>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" class="auth-form">
+        <div class="input-group">
+          <label>Username</label>
+          <input type="text" id="login-user" placeholder="your_username" required autocomplete="username">
+        </div>
+        <div class="input-group">
+          <label>Password</label>
+          <input type="password" id="login-pass" placeholder="••••••••" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn-primary" id="login-btn">Login</button>
+        <div id="login-error" class="error-msg"></div>
+      </form>
+
+      <!-- Register Form -->
+      <form id="register-form" class="auth-form" style="display:none">
+        <div class="input-group">
+          <label>Full Name</label>
+          <input type="text" id="reg-name" placeholder="John Doe" required>
+        </div>
+        <div class="input-group">
+          <label>Username</label>
+          <input type="text" id="reg-user" placeholder="john_doe" required autocomplete="username">
+        </div>
+        <div class="input-group">
+          <label>Email</label>
+          <input type="email" id="reg-email" placeholder="john@mail.com" required>
+        </div>
+        <div class="input-group">
+          <label>Password</label>
+          <input type="password" id="reg-pass" placeholder="Min 6 characters" required minlength="6" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn-primary" id="reg-btn">Create Account</button>
+        <div id="reg-error" class="error-msg"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ MAIN APP ═══ -->
+  <div id="app-screen" class="screen" style="display:none">
+
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="topbar-icon">💰</span>
+        <span class="topbar-title">FinanceTracker</span>
+      </div>
+      <div class="topbar-right">
+        <span id="user-badge" class="user-badge"></span>
+        <button id="logout-btn" class="icon-btn" title="Logout">⏻</button>
+      </div>
+    </header>
+
+    <!-- Page Container -->
+    <main id="page-container" class="page-container"></main>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-page="dashboard">
+        <span class="nav-icon">🏠</span>
+        <span class="nav-label">Home</span>
+      </button>
+      <button class="nav-item" data-page="transactions">
+        <span class="nav-icon">💸</span>
+        <span class="nav-label">History</span>
+      </button>
+      <button class="nav-item add-btn" data-page="add">
+        <span class="nav-icon">＋</span>
+      </button>
+      <button class="nav-item" data-page="analytics">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Stats</span>
+      </button>
+      <button class="nav-item" data-page="more">
+        <span class="nav-icon">☰</span>
+        <span class="nav-label">More</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
