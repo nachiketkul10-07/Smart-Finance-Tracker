@@ -53,8 +53,23 @@ BANK_EMAIL_SENDERS = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 def is_credentials_available() -> bool:
-    """Check if Google OAuth2 credentials file exists."""
-    return CREDENTIALS_FILE.exists()
+    """Check if Google OAuth2 credentials file exists. Auto-creates from Streamlit secrets if on cloud."""
+    if CREDENTIALS_FILE.exists():
+        return True
+    # Try creating from Streamlit secrets (for cloud deployment)
+    try:
+        import streamlit as st
+        if "gmail_credentials" in st.secrets:
+            DATA_DIR.mkdir(exist_ok=True)
+            cred_data = dict(st.secrets["gmail_credentials"])
+            # Detect credential type: Desktop app = "installed", Web app = "web"
+            cred_type = str(st.secrets.get("gmail_credentials_type", "installed"))
+            with open(CREDENTIALS_FILE, "w") as f:
+                json.dump({cred_type: cred_data}, f)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def is_authenticated() -> bool:
