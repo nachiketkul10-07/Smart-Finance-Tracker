@@ -1093,6 +1093,11 @@ def page_import():
             </div>
             """, unsafe_allow_html=True)
 
+            # Debug expander — shows exactly why credentials failed to load
+            with st.expander("🔍 Debug: Why isn't Gmail loading? (click to check)"):
+                from gmail_parser import get_credentials_debug_info
+                st.code(get_credentials_debug_info())
+
         elif is_authenticated():
             # Connected — show sync controls
             email = get_connected_email()

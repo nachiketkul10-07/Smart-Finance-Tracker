@@ -60,16 +60,50 @@ def is_credentials_available() -> bool:
     try:
         import streamlit as st
         if "gmail_credentials" in st.secrets:
-            DATA_DIR.mkdir(exist_ok=True)
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
             cred_data = dict(st.secrets["gmail_credentials"])
             # Detect credential type: Desktop app = "installed", Web app = "web"
-            cred_type = str(st.secrets.get("gmail_credentials_type", "installed"))
+            # st.secrets doesn't support .get() at top level — use try/except
+            try:
+                cred_type = str(st.secrets["gmail_credentials_type"])
+            except (KeyError, Exception):
+                cred_type = "installed"
             with open(CREDENTIALS_FILE, "w") as f:
                 json.dump({cred_type: cred_data}, f)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        # Store error for display in UI
+        try:
+            import streamlit as st
+            st.session_state["gmail_cred_error"] = str(e)
+        except Exception:
+            pass
     return False
+
+
+def get_credentials_debug_info() -> str:
+    """Returns debug info about why credentials loading failed (for display in UI)."""
+    try:
+        import streamlit as st
+        lines = []
+        lines.append(f"CREDENTIALS_FILE path: {CREDENTIALS_FILE}")
+        lines.append(f"File exists: {CREDENTIALS_FILE.exists()}")
+        lines.append(f"DATA_DIR exists: {DATA_DIR.exists()}")
+        if "gmail_credentials" in st.secrets:
+            lines.append("gmail_credentials key: FOUND in secrets ✅")
+            try:
+                cred_data = dict(st.secrets["gmail_credentials"])
+                lines.append(f"Keys in gmail_credentials: {list(cred_data.keys())}")
+            except Exception as e:
+                lines.append(f"Error reading gmail_credentials: {e}")
+        else:
+            lines.append("gmail_credentials key: NOT FOUND in secrets ❌")
+            lines.append(f"Available secret keys: {list(st.secrets.keys())}")
+        if "gmail_cred_error" in st.session_state:
+            lines.append(f"Last error: {st.session_state['gmail_cred_error']}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Debug failed: {e}"
 
 
 def is_authenticated() -> bool:
