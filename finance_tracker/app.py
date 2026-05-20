@@ -1139,7 +1139,7 @@ def page_import():
                     st.rerun()
 
         else:
-            # Credentials exist but not authenticated — show connect button
+            # Credentials exist but not authenticated — show connect flow
             st.markdown("""
             <div style="font-size:0.82rem;color:#a0a0c0;margin-bottom:1rem;">
                 Connect your Gmail to automatically import bank transaction alerts from
@@ -1148,31 +1148,50 @@ def page_import():
             </div>
             """, unsafe_allow_html=True)
 
-            if st.button("🔐 Connect Gmail Account", use_container_width=True,
-                         type="primary", key="gmail_connect_btn"):
-                with st.spinner("Opening Google login..."):
-                    result = authenticate_local()
-                if result["success"]:
-                    st.success(result["message"])
-                    st.rerun()
-                else:
-                    st.error(result["message"])
+            auth_url = get_auth_url()
+            if auth_url:
+                st.markdown("""
+                <div style="background:#1a1a2e;border:1px solid #6C5CE7;border-radius:12px;
+                            padding:1.2rem;margin-bottom:1rem;">
+                    <div style="color:#f0f0ff;font-weight:600;margin-bottom:0.8rem;">
+                        🔐 How to Connect Gmail (3 steps):
+                    </div>
+                    <div style="color:#a0a0c0;font-size:0.85rem;line-height:1.8;">
+                        <b style="color:#6C5CE7;">Step 1:</b> Click the button below → Google sign-in opens<br>
+                        <b style="color:#6C5CE7;">Step 2:</b> Allow access → browser shows an error page
+                        <span style="color:#FDCB6E;">(that's normal! ✓)</span><br>
+                        <b style="color:#6C5CE7;">Step 3:</b> Copy the <b>full URL</b> from your browser's address bar
+                        and paste it below
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            # Alternative: manual auth code flow
-            with st.expander("🔑 Alternative: Paste auth code manually"):
-                auth_url = get_auth_url()
-                if auth_url:
-                    st.markdown(f'<a href="{auth_url}" target="_blank" '
-                                f'style="color:#6C5CE7;">Click here to authorize</a>',
-                                unsafe_allow_html=True)
-                    code = st.text_input("Paste authorization code", key="gmail_code")
-                    if code and st.button("Submit Code", key="gmail_code_btn"):
-                        result = authenticate_with_code(code.strip())
-                        if result["success"]:
-                            st.success(result["message"])
-                            st.rerun()
-                        else:
-                            st.error(result["message"])
+                st.link_button("🔐 Step 1: Open Google Authorization", auth_url,
+                               use_container_width=True, type="primary")
+
+                st.markdown("""
+                <div style="font-size:0.8rem;color:#FDCB6E;margin:0.5rem 0;">
+                    ⚠️ After clicking Allow on Google, your browser will redirect to
+                    <code>http://localhost/?code=...</code> and show "This site can't be reached"
+                    — that's expected! Just copy the entire URL from the address bar.
+                </div>
+                """, unsafe_allow_html=True)
+
+                redirect_url = st.text_input(
+                    "📋 Step 3: Paste the full redirect URL here (or just the code after 'code=')",
+                    key="gmail_code",
+                    placeholder="http://localhost/?code=4/0AX4XfW... OR just the code itself"
+                )
+                if redirect_url and st.button("✅ Connect Gmail", key="gmail_code_btn",
+                                              use_container_width=True, type="primary"):
+                    with st.spinner("Verifying..."):
+                        result = authenticate_with_code(redirect_url.strip())
+                    if result["success"]:
+                        st.success(result["message"])
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
 
         st.markdown('</div>', unsafe_allow_html=True)
 

@@ -130,6 +130,9 @@ def _get_cred_type() -> str:
         return "installed"
 
 
+REDIRECT_URI = "http://localhost"
+
+
 def get_auth_url() -> Optional[str]:
     """Generate OAuth2 authorization URL for the user to visit."""
     if not is_credentials_available():
@@ -141,18 +144,18 @@ def get_auth_url() -> Optional[str]:
     if cred_type == "web":
         flow = Flow.from_client_secrets_file(
             str(CREDENTIALS_FILE), SCOPES,
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+            redirect_uri=REDIRECT_URI
         )
     else:
         flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        flow.redirect_uri = REDIRECT_URI
 
     auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
     return auth_url
 
 
 def authenticate_with_code(auth_code: str) -> dict:
-    """Complete OAuth2 flow with the authorization code."""
+    """Complete OAuth2 flow with the authorization code from localhost redirect URL."""
     if not is_credentials_available():
         return {"success": False, "message": "credentials.json not found in data/"}
 
@@ -163,16 +166,23 @@ def authenticate_with_code(auth_code: str) -> dict:
         if cred_type == "web":
             flow = Flow.from_client_secrets_file(
                 str(CREDENTIALS_FILE), SCOPES,
-                redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+                redirect_uri=REDIRECT_URI
             )
         else:
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-            flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+            flow.redirect_uri = REDIRECT_URI
+
+        # Strip any extra params if user pasted full URL instead of just the code
+        if "?code=" in auth_code:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(auth_code)
+            params = urllib.parse.parse_qs(parsed.query)
+            auth_code = params.get("code", [auth_code])[0]
 
         flow.fetch_token(code=auth_code)
         creds = flow.credentials
 
-        DATA_DIR.mkdir(exist_ok=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         with open(TOKEN_FILE, "wb") as f:
             pickle.dump(creds, f)
 
