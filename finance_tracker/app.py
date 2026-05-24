@@ -1030,7 +1030,7 @@ def page_import():
             with edit_c2:
                 from utils import auto_detect_category, EXPENSE_CATEGORIES
                 default_cat = auto_detect_category(parsed["merchant"], "expense")
-                cat_list = list(EXPENSE_CATEGORIES.keys())
+                cat_list = list(EXPENSE_CATEGORIES)
                 cat_idx = cat_list.index(default_cat) if default_cat in cat_list else 0
                 edit_category = st.selectbox("Category", cat_list, index=cat_idx,
                                              key="ocr_cat")
