@@ -207,12 +207,8 @@ def detect_upi_app(text: str) -> str:
 def _clean_ocr_amount(s: str) -> Optional[float]:
     """Clean OCR noise from amount string and return float."""
     s = s.strip()
-    # Fix common OCR mistakes: 'O' → '0', 'l' → '1', 'S' → '5'
-    s = s.replace("O", "0").replace("o", "0")
-    s = s.replace("l", "1").replace("I", "1")
-    s = s.replace("S", "5").replace("s", "5")
     s = s.replace(" ", "")  # Remove spaces OCR puts in numbers
-    # Remove any remaining non-numeric chars except , and .
+    # Remove any non-numeric chars except , and .
     s = re.sub(r'[^\d,.]', '', s)
     if not s:
         return None
@@ -225,58 +221,155 @@ def _clean_ocr_amount(s: str) -> Optional[float]:
     return None
 
 
+def _is_promo_amount(text: str, amount: float, pos: int) -> bool:
+    """Check if an amount is from a promotional banner, not the real transaction."""
+    # Look at surrounding text (50 chars around the match)
+    start = max(0, pos - 60)
+    end = min(len(text), pos + 60)
+    context = text[start:end].lower()
+    promo_kw = ["activate", "fingerprint", "upto", "up to", "limit",
+                "offer", "cashback", "earn", "reward", "upgrade", "secure"]
+    return any(kw in context for kw in promo_kw)
+
+
 def _extract_amount(text: str) -> Optional[float]:
-    """Extract monetary amount from text. Enhanced for OCR edge cases."""
+    """Extract monetary amount from text. Enhanced for PhonePe/GPay OCR noise."""
     candidates = []
 
-    # Normalize text — fix common OCR issues
-    normalized = text.replace("₨", "₹").replace("Rs.", "₹").replace("RS.", "₹")
+    fixed = text.replace("Paidto", "Paid to").replace("paidto", "paid to")
+    fixed = fixed.replace("Debitedfrom", "Debited from")
+
+    normalized = fixed.replace("₨", "₹").replace("RS.", "₹").replace("Rs.", "₹")
     normalized = normalized.replace("Rs", "₹").replace("INR", "₹")
 
-    # Strategy 1: ₹ symbol followed by amount (highest priority)
-    for m in re.finditer(r'₹\s?([0-9O][0-9,.\sOlIS]*)', normalized):
-        val = _clean_ocr_amount(m.group(1))
-        if val:
-            candidates.append(("currency", val, m.start()))
+    lines = fixed.split("\n")
 
-    # Strategy 2: Rs. / INR prefix
-    for m in re.finditer(r'(?:Rs\.?|INR|Rupees)\s?([0-9O][0-9,.\sOlIS]*)', text, re.IGNORECASE):
+    # ── Strategy 1: ₹ symbol followed by amount ──
+    for m in re.finditer(r'₹\s?(\d[\d,.]*)', normalized):
         val = _clean_ocr_amount(m.group(1))
-        if val:
-            candidates.append(("currency", val, m.start()))
+        if val and not _is_promo_amount(normalized, val, m.start()):
+            candidates.append(("currency", val))
 
-    # Strategy 3: Context words near amount
+    # ── Strategy 2: Amount near "Paid to" ──
+    for i, line in enumerate(lines):
+        ll = line.strip().lower()
+        if any(kw in ll for kw in ["paid to", "sent to"]):
+            for j in range(max(0, i - 5), i):
+                stripped = lines[j].strip()
+                if _near_card_number(lines, j) or _is_time_or_date_line(stripped):
+                    continue
+                val = _clean_ocr_amount(stripped)
+                if val and val >= 1 and not _is_year(val) and not _is_phone_or_id(val):
+                    candidates.append(("near_paid", val))
+
+    # ── Strategy 3: Context keywords near amount ──
     for m in re.finditer(
-        r'(?:paid|received|debited|credited|amount|total|sent|money sent)\s*:?\s*(?:₹|Rs\.?|INR)?\s?([0-9O][0-9,.\sOlIS]*)',
-        text, re.IGNORECASE
+        r'(?:paid|received|debited|credited|amount|total|sent)\s*:?\s*(?:₹|Rs\.?|INR)?\s?(\d[\d,.]*)',
+        fixed, re.IGNORECASE
     ):
         val = _clean_ocr_amount(m.group(1))
-        if val:
-            candidates.append(("context", val, m.start()))
+        if val and not _is_promo_amount(fixed, val, m.start()) and not _is_year(val):
+            candidates.append(("context", val))
 
-    # Strategy 4: Standalone number lines (common in payment screenshots)
-    for line in text.split("\n"):
-        line = line.strip()
-        # Match lines that look like money amounts
-        if re.match(r'^[₹]?\s?[0-9,]+\.?\d{0,2}$', line):
-            val = _clean_ocr_amount(line.replace("₹", ""))
-            if val and val >= 1:
-                candidates.append(("standalone", val, 0))
-
-    # Strategy 5: Large bold numbers (OCR often reads the big amount first)
-    for m in re.finditer(r'\b(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\b', text):
-        val = _clean_ocr_amount(m.group(1))
-        if val and val >= 10:  # Skip tiny numbers
-            candidates.append(("numeric", val, m.start()))
+    # ── Strategy 4: Standalone amount lines (pure numbers only) ──
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        # Only match lines that are PURELY numeric (with optional ₹, comma, dot)
+        if re.match(r'^[₹]?\s?[\d,]+\.?\d{0,2}$', stripped) and len(stripped) <= 12:
+            if _near_card_number(lines, idx) or _is_time_or_date_line(stripped):
+                continue
+            val = _clean_ocr_amount(stripped.replace("₹", ""))
+            if val and val >= 1 and not _is_year(val) and not _is_phone_or_id(val):
+                candidates.append(("standalone", val))
 
     if not candidates:
         return None
 
-    # Priority: currency > context > standalone > numeric
-    # Among same priority, prefer larger amounts (the main transaction amount)
-    priority = {"currency": 0, "context": 1, "standalone": 2, "numeric": 3}
-    candidates.sort(key=lambda x: (priority.get(x[0], 9), -x[1]))
+    # ── Strategy 5: Duplicate vote ──
+    from collections import Counter
+    amount_counts = Counter(v for _, v in candidates)
+    repeated = [(amt, cnt) for amt, cnt in amount_counts.items() if cnt >= 2]
+    if repeated:
+        repeated.sort(key=lambda x: x[1], reverse=True)
+        return repeated[0][0]
+
+    # ── Strategy 6: Common suffix voting on ALL standalone numbers ──
+    # Collect ALL pure numeric lines (even near card numbers) for suffix analysis
+    # OCR adds noise digit at start: 1349 & 8349 → real amount is 349
+    all_raw = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r'^\d[\d,.]*$', stripped) and len(stripped) <= 6:
+            val = _clean_ocr_amount(stripped)
+            if val and val >= 1 and not _is_year(val):
+                all_raw.append(val)
+    if len(all_raw) >= 2:
+        suffix = _find_common_suffix(all_raw)
+        if suffix and suffix >= 1:
+            return suffix
+
+    # Priority: near_paid > currency > context > standalone
+    priority = {"near_paid": 0, "currency": 1, "context": 2, "standalone": 3}
+    candidates.sort(key=lambda x: priority.get(x[0], 9))
     return candidates[0][1]
+
+
+def _find_common_suffix(vals: list) -> Optional[float]:
+    """Find common numeric suffix among values. E.g. [1349, 8349] → 349."""
+    strs = [str(int(v)) for v in vals if v == int(v) and v >= 10]
+    if len(strs) < 2:
+        return None
+    for length in range(min(len(s) for s in strs) - 1, 1, -1):
+        suffixes = [s[-length:] for s in strs]
+        from collections import Counter
+        cnt = Counter(suffixes)
+        best_suffix, best_count = cnt.most_common(1)[0]
+        if best_count >= 2 and best_suffix[0] != '0':
+            return float(best_suffix)
+    return None
+
+
+def _near_card_number(lines: list, idx: int) -> bool:
+    """Check if a line is near a card/account number pattern (XXXX1853)."""
+    check_range = range(max(0, idx - 2), min(len(lines), idx + 3))
+    for j in check_range:
+        if j == idx:
+            continue
+        if re.search(r'X{2,}', lines[j], re.IGNORECASE):
+            return True
+        if re.search(r'debited\s*from|debitedfrom|account|a/c', lines[j], re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_year(val: float) -> bool:
+    """Check if a number looks like a year (2020-2030)."""
+    return 2020 <= val <= 2030 and val == int(val)
+
+
+def _is_phone_or_id(val: float) -> bool:
+    """Check if a number looks like a phone/ID, not an amount."""
+    return val > 100000 and val == int(val) and len(str(int(val))) >= 8
+
+
+def _is_time_or_date_line(line: str) -> bool:
+    """Check if a line contains time/date info, not an amount."""
+    lower = line.lower()
+    # Contains time indicators
+    if re.search(r'(?:am|pm|a\.m|p\.m)', lower):
+        return True
+    # Contains month names
+    months = ["jan", "feb", "mar", "apr", "may", "jun",
+              "jul", "aug", "sep", "oct", "nov", "dec"]
+    if any(m in lower for m in months):
+        return True
+    # Contains "on" with digits (like "08.49 pm on 19")
+    if re.search(r'\d.*\bon\b.*\d', lower):
+        return True
+    # Contains @ with letters around it (not a UPI ID — like "pm@n")
+    if re.search(r'[a-z]@[a-z]', lower):
+        return True
+    return False
 
 
 def _extract_upi_id(text: str) -> Optional[str]:
@@ -335,29 +428,83 @@ def _extract_time(text: str) -> Optional[str]:
 
 def _extract_merchant(text: str) -> str:
     """Extract merchant/payee name from text. Enhanced for all UPI apps."""
+    # Fix merged OCR text
+    fixed = text.replace("Paidto", "Paid to").replace("paidto", "paid to")
+    fixed = fixed.replace("Debitedfrom", "Debited from")
+
+    # Strategy 1: Look for name on/after "Paid to" line
+    lines = fixed.split("\n")
+    for i, line in enumerate(lines):
+        lower_line = line.strip().lower()
+        if any(kw in lower_line for kw in ["paid to", "sent to", "payment to"]):
+            # Check if name is on the SAME line (after "paid to")
+            m = re.search(r'(?:paid to|sent to)\s+([A-Za-z][A-Za-z\s.\&\'\-]{2,35})', line, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+                if len(name) >= 3 and not name.isdigit():
+                    return _clean_merchant_name(name)
+            # Check NEXT few lines for name (skip numeric/empty/short garbage)
+            for j in range(i + 1, min(len(lines), i + 6)):
+                next_line = lines[j].strip()
+                # Skip empty lines
+                if not next_line:
+                    continue
+                # Skip purely numeric lines (amounts)
+                if re.match(r'^[\d,.\s₹]+$', next_line):
+                    continue
+                # Skip very short lines that look like OCR noise (Jo, Ill, etc.)
+                if len(next_line) <= 2 and not next_line.isupper():
+                    continue
+                # Skip lines that are duplicates of "paid to"
+                if "paid to" in next_line.lower() or "sent to" in next_line.lower():
+                    continue
+                # Found a valid merchant name line
+                if re.match(r'^[A-Za-z]', next_line):
+                    return _clean_merchant_name(next_line)
+
+    # Strategy 2: Regex patterns (use [^\n] to avoid matching across lines)
     patterns = [
-        # "Paid to <name>" / "Sent to <name>"
-        r'(?:paid to|sent to|payment to|money sent to)\s+([A-Za-z][A-Za-z\s.\&\'\-]{1,35})',
-        # "Received from <name>"
-        r'(?:received from|got from)\s+([A-Za-z][A-Za-z\s.\&\'\-]{1,35})',
-        # "To <NAME>" (capitalized name on its own line)
-        r'(?:^|\n)\s*(?:To|FROM|Paid)\s+([A-Z][a-zA-Z\s.\&\'\-]{2,25})',
-        # Name followed by UPI ID on next line (GPay pattern)
-        r'([A-Za-z][A-Za-z\s]{2,25})\n\s*[a-z0-9._\-]+@',
-        # Generic "to/from <name>"
-        r'(?:to|from)\s+([A-Z][a-zA-Z\s.\&\'\-]{2,25})',
+        r'(?:paid to|sent to|payment to|money sent to)[ \t]+([A-Za-z][A-Za-z \t.\&\'\-]{2,35})',
+        r'(?:received from|got from)[ \t]+([A-Za-z][A-Za-z \t.\&\'\-]{2,35})',
+        r'(?:^|\n)\s*(?:To|FROM|Paid)[ \t]+([A-Z][a-zA-Z \t.\&\'\-]{2,25})',
+        r'([A-Za-z][A-Za-z ]{2,25})\n\s*[a-z0-9._\-]+@',
+        r'(?:to|from)[ \t]+([A-Z][a-zA-Z \t.\&\'\-]{2,25})',
     ]
     for pat in patterns:
-        match = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        match = re.search(pat, fixed, re.IGNORECASE | re.MULTILINE)
         if match:
-            name = match.group(1).strip()
-            # Clean trailing noise
-            name = re.sub(r'\s+(on|at|via|upi|payment|transaction|ref|dated|using|with).*',
-                         '', name, flags=re.IGNORECASE)
-            name = name.strip()
-            if len(name) >= 2 and not name.isdigit():
-                return name[:50]
+            name = _clean_merchant_name(match.group(1))
+            if len(name) >= 3 and not name.isdigit():
+                return name
+
+    # Strategy 3: Extract from UPI ID (e.g. relianceretail2easebuzz@kotakpay → Reliance Retail)
+    upi_match = re.search(r'([a-zA-Z0-9._\-]+)@[a-z]+', fixed)
+    if upi_match:
+        upi_name = upi_match.group(1)
+        # Clean numbers and split camelCase
+        upi_clean = re.sub(r'\d+', ' ', upi_name)
+        upi_clean = re.sub(r'([a-z])([A-Z])', r'\1 \2', upi_clean)
+        upi_clean = upi_clean.replace("_", " ").replace(".", " ").strip()
+        if len(upi_clean) >= 3:
+            # Take first meaningful word(s) from UPI ID
+            words = upi_clean.split()
+            merchant = " ".join(words[:3]).title()
+            return merchant[:50]
+
     return "UPI Transaction"
+
+
+def _clean_merchant_name(name: str) -> str:
+    """Clean up a merchant name from OCR noise."""
+    name = name.strip()
+    # Remove trailing noise words
+    name = re.sub(r'\s+(on|at|via|upi|payment|transaction|ref|dated|using|with|transfer).*',
+                 '', name, flags=re.IGNORECASE)
+    # Remove trailing numbers/special chars
+    name = re.sub(r'[\d]+$', '', name).strip()
+    # Remove common OCR noise
+    name = re.sub(r'[|\\/{}\[\]<>]', '', name).strip()
+    return name[:50] if name else "UPI Transaction"
 
 
 def _extract_status(text: str) -> str:
