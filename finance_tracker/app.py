@@ -28,13 +28,8 @@ from analytics import (
 )
 from ai_insights import get_insights
 from export_utils import export_excel, export_pdf
-from bank_parser import parse_statement_to_df, parse_statement, get_supported_banks
-from ocr_parser import parse_screenshot, parse_upi_screenshot
-from gmail_parser import (
-    is_credentials_available, is_authenticated, get_auth_url,
-    authenticate_with_code, authenticate_local, sync_gmail_transactions,
-    disconnect, get_connected_email
-)
+# Heavy imports (bank_parser, ocr_parser, gmail_parser) are loaded lazily
+# inside page_import() to avoid crashing on startup if deps are missing
 from utils import (
     INCOME_CATEGORIES, EXPENSE_CATEGORIES, PAYMENT_MODES, CURRENCIES,
     auto_detect_category, fmt_currency, month_options, current_month,
@@ -862,6 +857,15 @@ def page_recurring():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def page_import():
+    # Lazy imports — only loaded when user visits Import page
+    from bank_parser import parse_statement_to_df, parse_statement, get_supported_banks
+    from ocr_parser import parse_screenshot, parse_upi_screenshot
+    from gmail_parser import (
+        is_credentials_available, is_authenticated, get_auth_url,
+        authenticate_with_code, authenticate_local, sync_gmail_transactions,
+        disconnect, get_connected_email
+    )
+
     uid = st.session_state["user_id"]
     sym = get_sym()
     section_title("📥", "Import Transactions",

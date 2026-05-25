@@ -9,8 +9,6 @@ Uses EasyOCR + OpenCV preprocessing. Runs 100% locally — no cloud API.
 
 import io
 import re
-import cv2
-import numpy as np
 from datetime import datetime, date
 from typing import Optional
 
@@ -29,8 +27,10 @@ def _get_reader():
 # IMAGE PREPROCESSING — Multiple strategies for different screenshot types
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _decode_image(img_bytes: bytes) -> np.ndarray:
+def _decode_image(img_bytes: bytes):
     """Decode image bytes to OpenCV BGR image."""
+    import cv2
+    import numpy as np
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -38,8 +38,9 @@ def _decode_image(img_bytes: bytes) -> np.ndarray:
     return img
 
 
-def _upscale_if_small(img: np.ndarray, min_dim: int = 1200) -> np.ndarray:
+def _upscale_if_small(img, min_dim: int = 1200):
     """Upscale small images for better OCR accuracy."""
+    import cv2
     h, w = img.shape[:2]
     if max(h, w) < min_dim:
         scale = min_dim / max(h, w)
@@ -47,8 +48,9 @@ def _upscale_if_small(img: np.ndarray, min_dim: int = 1200) -> np.ndarray:
     return img
 
 
-def preprocess_v1_adaptive(img: np.ndarray) -> np.ndarray:
+def preprocess_v1_adaptive(img):
     """Strategy 1: Adaptive threshold — good for light mode screenshots."""
+    import cv2
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     binary = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8
@@ -56,8 +58,9 @@ def preprocess_v1_adaptive(img: np.ndarray) -> np.ndarray:
     return cv2.fastNlMeansDenoising(binary, h=10)
 
 
-def preprocess_v2_contrast(img: np.ndarray) -> np.ndarray:
+def preprocess_v2_contrast(img):
     """Strategy 2: CLAHE contrast enhancement — good for dark mode screenshots."""
+    import cv2
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
@@ -65,8 +68,10 @@ def preprocess_v2_contrast(img: np.ndarray) -> np.ndarray:
     return binary
 
 
-def preprocess_v3_sharpen(img: np.ndarray) -> np.ndarray:
+def preprocess_v3_sharpen(img):
     """Strategy 3: Sharpen + simple threshold — good for blurry screenshots."""
+    import cv2
+    import numpy as np
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(gray, -1, kernel)
@@ -74,8 +79,10 @@ def preprocess_v3_sharpen(img: np.ndarray) -> np.ndarray:
     return binary
 
 
-def preprocess_v4_invert(img: np.ndarray) -> np.ndarray:
+def preprocess_v4_invert(img):
     """Strategy 4: Inverted for dark mode — white text on dark background."""
+    import cv2
+    import numpy as np
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mean_val = np.mean(gray)
     if mean_val < 128:  # Dark mode detected
