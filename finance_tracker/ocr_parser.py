@@ -190,11 +190,15 @@ def _extract_amount(text: str) -> Optional[float]:
 
     fixed = text.replace("Paidto", "Paid to").replace("paidto", "paid to")
     fixed = fixed.replace("Debitedfrom", "Debited from")
+    fixed = fixed.replace("Receivedfrom", "Received from")
 
     normalized = fixed.replace("₨", "₹").replace("RS.", "₹").replace("Rs.", "₹")
     normalized = normalized.replace("Rs", "₹").replace("INR", "₹")
+    # pytesseract sometimes reads ₹ as %  Z  2  ? or other chars before numbers
+    normalized = re.sub(r'[%Z?]\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\b', r'₹\1', normalized)
 
     lines = fixed.split("\n")
+    norm_lines = normalized.split("\n")
 
     # ── Strategy 1: ₹ symbol followed by amount ──
     for m in re.finditer(r'₹\s?(\d[\d,.]*)', normalized):
@@ -202,22 +206,39 @@ def _extract_amount(text: str) -> Optional[float]:
         if val and not _is_promo_amount(normalized, val, m.start()):
             candidates.append(("currency", val))
 
-    # ── Strategy 2: Amount near "Paid to" ──
+    # ── Strategy 1b: Amount on same line as text (e.g. "Baba 1   ₹3,000") ──
+    for line in norm_lines:
+        m = re.search(r'₹\s?(\d[\d,.]*)', line)
+        if m:
+            val = _clean_ocr_amount(m.group(1))
+            if val and not _is_promo_amount(line, val, m.start()):
+                candidates.append(("inline_currency", val))
+
+    # ── Strategy 2: Amount near "Paid to" / "Received from" ──
     for i, line in enumerate(lines):
         ll = line.strip().lower()
-        if any(kw in ll for kw in ["paid to", "sent to"]):
+        if any(kw in ll for kw in ["paid to", "sent to", "received from", "credited to"]):
+            # Look BEFORE the keyword line
             for j in range(max(0, i - 5), i):
                 stripped = lines[j].strip()
                 if _near_card_number(lines, j) or _is_time_or_date_line(stripped):
                     continue
                 val = _clean_ocr_amount(stripped)
                 if val and val >= 1 and not _is_year(val) and not _is_phone_or_id(val):
-                    candidates.append(("near_paid", val))
+                    candidates.append(("near_keyword", val))
+            # Also look AFTER the keyword line (amount sometimes below)
+            for j in range(i + 1, min(len(lines), i + 4)):
+                stripped = lines[j].strip()
+                if _near_card_number(lines, j) or _is_time_or_date_line(stripped):
+                    continue
+                val = _clean_ocr_amount(stripped)
+                if val and val >= 1 and not _is_year(val) and not _is_phone_or_id(val):
+                    candidates.append(("near_keyword", val))
 
     # ── Strategy 3: Context keywords near amount ──
     for m in re.finditer(
         r'(?:paid|received|debited|credited|amount|total|sent)\s*:?\s*(?:₹|Rs\.?|INR)?\s?(\d[\d,.]*)',
-        fixed, re.IGNORECASE
+        normalized, re.IGNORECASE
     ):
         val = _clean_ocr_amount(m.group(1))
         if val and not _is_promo_amount(fixed, val, m.start()) and not _is_year(val):
@@ -246,8 +267,6 @@ def _extract_amount(text: str) -> Optional[float]:
         return repeated[0][0]
 
     # ── Strategy 6: Common suffix voting on ALL standalone numbers ──
-    # Collect ALL pure numeric lines (even near card numbers) for suffix analysis
-    # OCR adds noise digit at start: 1349 & 8349 → real amount is 349
     all_raw = []
     for line in lines:
         stripped = line.strip()
@@ -260,8 +279,8 @@ def _extract_amount(text: str) -> Optional[float]:
         if suffix and suffix >= 1:
             return suffix
 
-    # Priority: near_paid > currency > context > standalone
-    priority = {"near_paid": 0, "currency": 1, "context": 2, "standalone": 3}
+    # Priority: currency > inline_currency > near_keyword > context > standalone
+    priority = {"currency": 0, "inline_currency": 1, "near_keyword": 2, "context": 3, "standalone": 4}
     candidates.sort(key=lambda x: priority.get(x[0], 9))
     return candidates[0][1]
 

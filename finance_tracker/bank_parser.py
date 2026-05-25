@@ -385,8 +385,42 @@ def _read_csv(file_bytes: bytes) -> pd.DataFrame:
 
 
 def _read_excel(file_bytes: bytes) -> pd.DataFrame:
-    """Read Excel file."""
-    return pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+    """Read Excel file with smart header row detection.
+    
+    Many bank statements (especially SBI) have metadata rows before the actual
+    column headers. This function scans the first 20 rows for one that looks
+    like a header (contains keywords like 'date', 'debit', 'credit', etc.).
+    """
+    # First, read without header to inspect all rows
+    raw = pd.read_excel(io.BytesIO(file_bytes), header=None, dtype=str)
+
+    header_keywords = {
+        "date", "txn date", "transaction date", "value date",
+        "description", "narration", "particulars",
+        "debit", "credit", "withdrawal", "deposit", "amount",
+        "balance", "closing balance", "ref", "cheque",
+    }
+
+    best_row = 0
+    best_score = 0
+    for i in range(min(20, len(raw))):
+        row_vals = [str(v).strip().lower() for v in raw.iloc[i] if pd.notna(v)]
+        score = sum(1 for v in row_vals if any(kw in v for kw in header_keywords))
+        if score > best_score:
+            best_score = score
+            best_row = i
+
+    if best_score >= 2:
+        # Use detected row as header, skip everything before it
+        df = pd.read_excel(io.BytesIO(file_bytes), header=best_row, dtype=str)
+    else:
+        # Fallback: use row 0
+        df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+
+    # Drop fully empty columns (Unnamed columns with no data)
+    df = df.dropna(axis=1, how="all")
+
+    return df
 
 
 # Known date-like patterns to identify header rows
