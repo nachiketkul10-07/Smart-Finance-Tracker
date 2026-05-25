@@ -22,12 +22,12 @@ BANK_PROFILES = {
         "name": "State Bank of India",
         "date_cols":    ["Txn Date", "Transaction Date", "Value Date", "Date"],
         "narration_cols": ["Description", "Narration", "Particulars", "Ref No./Cheque No."],
-        "debit_cols":   ["Debit", "Withdrawal", "Debit Amount", "Dr"],
-        "credit_cols":  ["Credit", "Deposit", "Credit Amount", "Cr"],
-        "balance_cols": ["Balance", "Closing Balance"],
+        "debit_cols":   ["Debit", "Debit (\u20b9)", "Debit (Rs)", "Withdrawal", "Debit Amount", "Dr"],
+        "credit_cols":  ["Credit", "Credit (\u20b9)", "Credit (Rs)", "Deposit", "Credit Amount", "Cr"],
+        "balance_cols": ["Balance", "Balance (\u20b9)", "Balance (Rs)", "Closing Balance"],
         "ref_cols":     ["Ref No", "Reference", "Chq/Ref No", "Ref No./Cheque No."],
-        "date_formats": ["%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d-%b-%Y", "%Y-%m-%d"],
-        "skip_keywords": ["Statement", "Branch", "Account", "IFSC", "Customer", "CIF"],
+        "date_formats": ["%d-%m-%Y", "%d/%m/%Y", "%d %b %Y", "%d-%b-%Y", "%Y-%m-%d"],
+        "skip_keywords": ["SAMPLE BANK STATEMENT", "Account Holder", "Account Number", "Statement Period", "Branch", "IFSC", "Customer", "CIF"],
         "detect_keywords": ["SBI", "State Bank", "SBIN"],
     },
     "HDFC": {
@@ -231,11 +231,32 @@ def _get_profile(bank: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_column(df_columns: list, candidates: list) -> Optional[str]:
-    """Find the first matching column name (case-insensitive, stripped)."""
+    """Find the first matching column name.
+    
+    Matching strategy (in order of preference):
+    1. Exact case-insensitive match
+    2. Column starts with candidate (e.g. 'Debit' matches 'Debit (₹)')
+    3. Candidate is a substring of column name
+    """
     clean = {c.strip().lower(): c for c in df_columns}
+    # Pass 1: Exact match
     for cand in candidates:
-        if cand.strip().lower() in clean:
-            return clean[cand.strip().lower()]
+        cand_lower = cand.strip().lower()
+        if cand_lower in clean:
+            return clean[cand_lower]
+    # Pass 2: Starts-with match
+    for cand in candidates:
+        cand_lower = cand.strip().lower()
+        for col_lower, col_orig in clean.items():
+            if col_lower.startswith(cand_lower):
+                return col_orig
+    # Pass 3: Contains match
+    for cand in candidates:
+        cand_lower = cand.strip().lower()
+        if len(cand_lower) >= 3:  # Avoid too-short substring matches
+            for col_lower, col_orig in clean.items():
+                if cand_lower in col_lower:
+                    return col_orig
     return None
 
 
@@ -321,20 +342,8 @@ def _parse_date(val, formats: list):
 
 def _clean_dataframe(df: pd.DataFrame, profile: dict) -> pd.DataFrame:
     """Remove metadata rows, empty rows, and header duplicates."""
-    skip_kw = profile.get("skip_keywords", [])
-
     # Drop rows where all values are NaN
     df = df.dropna(how="all")
-
-    # Drop rows that look like headers or metadata
-    if skip_kw:
-        mask = df.apply(
-            lambda row: any(
-                kw.lower() in str(v).lower()
-                for v in row.values for kw in skip_kw
-            ), axis=1
-        )
-        df = df[~mask]
 
     # Drop rows where debit AND credit are both 0 or NaN
     if "debit" in df.columns and "credit" in df.columns:

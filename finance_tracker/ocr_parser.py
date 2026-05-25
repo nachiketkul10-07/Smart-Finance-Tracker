@@ -362,28 +362,36 @@ def _extract_transaction_id(text: str) -> Optional[str]:
 
 def _extract_date(text: str) -> Optional[date]:
     """Extract date from screenshot text. Enhanced patterns."""
+    # Normalize: join lines that might split dates across lines
+    # e.g. "May\n2026" or "10 May\n2026"
+    joined = re.sub(r'\n\s*', ' ', text)
+
     patterns = [
-        # DD/MM/YYYY or DD-MM-YYYY
-        (r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', ["%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"]),
-        # DD/MM/YY
-        (r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{2})\b', ["%d/%m/%y", "%m/%d/%y"]),
+        # "on DD Mon YYYY" or "on DD Month YYYY" (common in UPI: "08.49 pm on 19 May 2026")
+        (r'on\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*[\s,]+(\d{4})',
+         ["%d %b %Y", "%d %B %Y"]),
         # DD Mon YYYY (e.g., 15 May 2024)
         (r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*[\s,]+(\d{4})',
          ["%d %b %Y", "%d %B %Y"]),
         # Mon DD, YYYY (e.g., May 15, 2024)
         (r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s+(\d{4})',
          ["%b %d %Y", "%B %d %Y"]),
+        # DD/MM/YYYY or DD-MM-YYYY
+        (r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', ["%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"]),
+        # DD/MM/YY
+        (r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{2})\b', ["%d/%m/%y", "%m/%d/%y"]),
         # YYYY-MM-DD (ISO format)
         (r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})', ["%Y-%m-%d", "%Y/%m/%d"]),
     ]
     for pat, fmts in patterns:
-        match = re.search(pat, text, re.IGNORECASE)
+        match = re.search(pat, joined, re.IGNORECASE)
         if match:
             date_str = match.group(0).replace(",", "").strip()
+            # Remove leading "on " if present
+            date_str = re.sub(r'^on\s+', '', date_str, flags=re.IGNORECASE)
             for fmt in fmts:
                 try:
                     parsed = datetime.strptime(date_str, fmt).date()
-                    # Sanity check: not in the future, not too old
                     if parsed <= date.today() and parsed.year >= 2020:
                         return parsed
                 except ValueError:
@@ -402,44 +410,51 @@ def _extract_merchant(text: str) -> str:
     # Fix merged OCR text
     fixed = text.replace("Paidto", "Paid to").replace("paidto", "paid to")
     fixed = fixed.replace("Debitedfrom", "Debited from")
+    fixed = fixed.replace("Receivedfrom", "Received from")
 
-    # Strategy 1: Look for name on/after "Paid to" line
+    # Strategy 1: Look for name on/after "Paid to" or "Received from" line
     lines = fixed.split("\n")
     for i, line in enumerate(lines):
         lower_line = line.strip().lower()
-        if any(kw in lower_line for kw in ["paid to", "sent to", "payment to"]):
-            # Check if name is on the SAME line (after "paid to")
-            m = re.search(r'(?:paid to|sent to)\s+([A-Za-z][A-Za-z\s.\&\'\-]{2,35})', line, re.IGNORECASE)
-            if m:
-                name = m.group(1).strip()
-                if len(name) >= 3 and not name.isdigit():
-                    return _clean_merchant_name(name)
-            # Check NEXT few lines for name (skip numeric/empty/short garbage)
+        if any(kw in lower_line for kw in ["paid to", "sent to", "payment to", "received from", "got from"]):
+            # Check if name is on the SAME line (after the keyword)
+            for kw in ["paid to", "sent to", "received from", "got from", "payment to"]:
+                m = re.search(
+                    kw + r'\s+([A-Za-z][A-Za-z0-9\s.&\'\-]{1,35})',
+                    line, re.IGNORECASE
+                )
+                if m:
+                    name = m.group(1).strip()
+                    if len(name) >= 2 and not re.match(r'^\d+$', name):
+                        return _clean_merchant_name(name)
+            # Check NEXT few lines for name
             for j in range(i + 1, min(len(lines), i + 6)):
                 next_line = lines[j].strip()
-                # Skip empty lines
                 if not next_line:
                     continue
                 # Skip purely numeric lines (amounts)
-                if re.match(r'^[\d,.\s₹]+$', next_line):
+                if re.match(r'^[\d,.\s₹%]+$', next_line):
                     continue
-                # Skip very short lines that look like OCR noise (Jo, Ill, etc.)
-                if len(next_line) <= 2 and not next_line.isupper():
+                # Skip phone numbers
+                if re.match(r'^\+?\d{10,}$', next_line.replace(" ", "")):
                     continue
-                # Skip lines that are duplicates of "paid to"
-                if "paid to" in next_line.lower() or "sent to" in next_line.lower():
+                # Skip UPI IDs
+                if '@' in next_line:
                     continue
-                # Found a valid merchant name line
-                if re.match(r'^[A-Za-z]', next_line):
+                # Skip lines that are duplicates of keywords
+                if any(kw in next_line.lower() for kw in ["paid to", "sent to", "received from"]):
+                    continue
+                # Found a valid merchant name line (allow letters AND digits like "Baba 1")
+                if re.match(r'^[A-Za-z]', next_line) and len(next_line) >= 2:
                     return _clean_merchant_name(next_line)
 
-    # Strategy 2: Regex patterns (use [^\n] to avoid matching across lines)
+    # Strategy 2: Regex patterns
     patterns = [
-        r'(?:paid to|sent to|payment to|money sent to)[ \t]+([A-Za-z][A-Za-z \t.\&\'\-]{2,35})',
-        r'(?:received from|got from)[ \t]+([A-Za-z][A-Za-z \t.\&\'\-]{2,35})',
-        r'(?:^|\n)\s*(?:To|FROM|Paid)[ \t]+([A-Z][a-zA-Z \t.\&\'\-]{2,25})',
-        r'([A-Za-z][A-Za-z ]{2,25})\n\s*[a-z0-9._\-]+@',
-        r'(?:to|from)[ \t]+([A-Z][a-zA-Z \t.\&\'\-]{2,25})',
+        r'(?:paid to|sent to|payment to|money sent to)[ \t]+([A-Za-z][A-Za-z0-9 \t.&\'\-]{1,35})',
+        r'(?:received from|got from|credited from)[ \t]+([A-Za-z][A-Za-z0-9 \t.&\'\-]{1,35})',
+        r'(?:^|\n)\s*(?:To|FROM|Paid)[ \t]+([A-Z][a-zA-Z0-9 \t.&\'\-]{2,25})',
+        r'([A-Za-z][A-Za-z0-9 ]{2,25})\n\s*[a-z0-9._\-]+@',
+        r'(?:to|from)[ \t]+([A-Z][a-zA-Z0-9 \t.&\'\-]{2,25})',
     ]
     for pat in patterns:
         match = re.search(pat, fixed, re.IGNORECASE | re.MULTILINE)
@@ -471,8 +486,8 @@ def _clean_merchant_name(name: str) -> str:
     # Remove trailing noise words
     name = re.sub(r'\s+(on|at|via|upi|payment|transaction|ref|dated|using|with|transfer).*',
                  '', name, flags=re.IGNORECASE)
-    # Remove trailing numbers/special chars
-    name = re.sub(r'[\d]+$', '', name).strip()
+    # Remove trailing numbers only if they're long (4+ digits = transaction ID, not a name like "Baba 1")
+    name = re.sub(r'\d{4,}$', '', name).strip()
     # Remove common OCR noise
     name = re.sub(r'[|\\/{}\[\]<>]', '', name).strip()
     return name[:50] if name else "UPI Transaction"
