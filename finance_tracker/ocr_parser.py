@@ -14,7 +14,6 @@ from typing import Optional
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OCR ENGINE — Uses pytesseract (lightweight) with Pillow preprocessing
-# Falls back to easyocr if pytesseract is unavailable
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _ocr_with_pytesseract(img_pil):
@@ -23,31 +22,13 @@ def _ocr_with_pytesseract(img_pil):
     text = pytesseract.image_to_string(img_pil, lang="eng")
     return text
 
-def _ocr_with_easyocr(img_bytes):
-    """Fallback: use easyocr if available."""
-    import easyocr
-    import numpy as np
-    reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-    arr = np.frombuffer(img_bytes, dtype=np.uint8)
-    import cv2
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        return ""
-    results = reader.readtext(img, detail=1, paragraph=False)
-    # Sort by Y position
-    results.sort(key=lambda r: r[0][0][1])
-    return "\n".join(r[1].strip() for r in results if r[1].strip())
-
 
 def _preprocess_pil(img_pil):
     """Preprocess PIL image for better OCR: grayscale, contrast, sharpen."""
     from PIL import ImageEnhance, ImageFilter
-    # Convert to grayscale
     gray = img_pil.convert("L")
-    # Enhance contrast
     enhancer = ImageEnhance.Contrast(gray)
     enhanced = enhancer.enhance(2.0)
-    # Sharpen
     sharpened = enhanced.filter(ImageFilter.SHARPEN)
     return sharpened
 
@@ -56,10 +37,9 @@ def _preprocess_dark_mode(img_pil):
     """Preprocess dark mode screenshots: invert colors first."""
     from PIL import ImageOps, ImageEnhance, ImageFilter
     gray = img_pil.convert("L")
-    # Check if dark mode (mean pixel value < 128)
     import statistics
     pixels = list(gray.getdata())
-    mean_val = statistics.mean(pixels[:1000])  # Sample first 1000 pixels
+    mean_val = statistics.mean(pixels[:1000])
     if mean_val < 128:
         gray = ImageOps.invert(gray)
     enhancer = ImageEnhance.Contrast(gray)
@@ -70,9 +50,8 @@ def _preprocess_dark_mode(img_pil):
 
 def extract_text(img_bytes: bytes) -> list:
     """
-    Run OCR with multiple preprocessing strategies.
+    Run OCR with multiple preprocessing strategies using pytesseract.
     Returns list of (text, confidence) tuples.
-    Uses pytesseract (lightweight) by default, falls back to easyocr.
     """
     from PIL import Image
 
@@ -86,39 +65,37 @@ def extract_text(img_bytes: bytes) -> list:
 
     all_texts = []
 
-    # Try pytesseract first (lightweight)
+    # Pass 1: Standard preprocessing
     try:
-        # Pass 1: Standard preprocessing
         processed = _preprocess_pil(img_pil)
         text1 = _ocr_with_pytesseract(processed)
         if text1.strip():
             all_texts.append(text1)
+    except Exception:
+        pass
 
-        # Pass 2: Dark mode preprocessing
+    # Pass 2: Dark mode preprocessing
+    try:
         processed2 = _preprocess_dark_mode(img_pil)
         text2 = _ocr_with_pytesseract(processed2)
         if text2.strip():
             all_texts.append(text2)
+    except Exception:
+        pass
 
-        # Pass 3: Raw image
+    # Pass 3: Raw image
+    try:
         text3 = _ocr_with_pytesseract(img_pil)
         if text3.strip():
             all_texts.append(text3)
-
     except Exception:
-        # If pytesseract fails, try easyocr
-        try:
-            text = _ocr_with_easyocr(img_bytes)
-            if text.strip():
-                all_texts.append(text)
-        except Exception:
-            pass
+        pass
 
     if not all_texts:
         raise ValueError("OCR could not extract any text from the image. "
                          "Make sure tesseract-ocr is installed.")
 
-    # Merge all OCR passes — use the one with the most text
+    # Use the pass with the most extracted text
     best_text = max(all_texts, key=len)
 
     # Return as list of (line, confidence) tuples
