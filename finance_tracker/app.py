@@ -1028,14 +1028,26 @@ def page_import():
                 edit_amount = st.number_input("Amount (₹)", value=parsed["amount"],
                                               min_value=0.01, key="ocr_amount")
             with edit_c2:
-                from utils import auto_detect_category, EXPENSE_CATEGORIES
-                default_cat = auto_detect_category(parsed["merchant"], "expense")
-                cat_list = list(EXPENSE_CATEGORIES)
-                cat_idx = cat_list.index(default_cat) if default_cat in cat_list else 0
-                edit_category = st.selectbox("Category", cat_list, index=cat_idx,
-                                             key="ocr_cat")
+                # Type toggle — default from OCR detection
+                txn_type_options = ["expense", "income"]
+                default_type_idx = 1 if parsed.get("type") == "income" else 0
+                edit_type = st.selectbox(
+                    "Type",
+                    options=["💸 Expense", "💰 Income"],
+                    index=default_type_idx,
+                    key="ocr_type"
+                )
+                is_income = (edit_type == "💰 Income")
             with edit_c3:
                 edit_date = st.date_input("Date", value=parsed["date"], key="ocr_date")
+
+            # Category — show income or expense categories based on type
+            from utils import auto_detect_category, EXPENSE_CATEGORIES, INCOME_CATEGORIES
+            txn_type_str = "income" if is_income else "expense"
+            default_cat = auto_detect_category(parsed["merchant"], txn_type_str)
+            cat_list = list(INCOME_CATEGORIES) if is_income else list(EXPENSE_CATEGORIES)
+            cat_idx = cat_list.index(default_cat) if default_cat in cat_list else 0
+            edit_category = st.selectbox("Category", cat_list, index=cat_idx, key="ocr_cat")
 
             edit_note = st.text_input("Note", value=parsed["merchant"][:80], key="ocr_note")
 
@@ -1052,10 +1064,11 @@ def page_import():
                 from database import add_transaction
                 try:
                     add_transaction(
-                        uid, "expense", float(edit_amount), edit_category,
+                        uid, txn_type_str, float(edit_amount), edit_category,
                         edit_note[:100], "UPI", str(edit_date)
                     )
-                    st.success(f"✅ Imported: ₹{edit_amount:,.2f} → {edit_category}")
+                    icon = "💰" if is_income else "💸"
+                    st.success(f"✅ Imported {icon} ₹{edit_amount:,.2f} → {edit_category}")
                     st.balloons()
                 except Exception as e:
                     st.error(f"❌ Import failed: {e}")

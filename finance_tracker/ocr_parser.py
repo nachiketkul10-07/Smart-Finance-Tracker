@@ -526,17 +526,55 @@ def _extract_status(text: str) -> str:
 
 
 def _detect_transaction_type(text: str) -> str:
-    """Detect if it's a debit (expense) or credit (income)."""
-    lower = text.lower()
-    credit_kw = ["received", "credited", "got from", "money received",
-                 "cashback", "refund", "received from"]
-    debit_kw = ["paid", "sent", "debited", "payment to", "money sent",
-                "paid to", "sent to", "transferred"]
+    """Detect if it's a debit (expense) or credit (income) with weighted scoring."""
+    fixed = text.replace("Paidto", "Paid to").replace("Debitedfrom", "Debited from")
+    lower = fixed.lower()
 
-    credit_score = sum(1 for kw in credit_kw if kw in lower)
-    debit_score = sum(1 for kw in debit_kw if kw in lower)
+    # ── Strong income signals (weight 3) ──
+    strong_income = [
+        "money received", "payment received", "received successfully",
+        "credited to your account", "you received", "received from",
+        "cashback credited", "refund credited", "refund successful",
+        "amount credited", "credit alert",
+    ]
+    # ── Moderate income signals (weight 2) ──
+    moderate_income = [
+        "received", "credited", "cashback", "refund", "got from",
+    ]
+    # ── Strong expense signals (weight 3) ──
+    strong_expense = [
+        "money sent", "paid successfully", "payment successful",
+        "debited from", "sent successfully", "amount debited",
+        "debit alert", "you paid",
+    ]
+    # ── Moderate expense signals (weight 2) ──
+    moderate_expense = [
+        "paid to", "sent to", "payment to", "debited",
+    ]
+    # ── Weak / ambiguous expense signals (weight 1) ──
+    # "paid" alone appears on both sent AND received screens
+    weak_expense = ["paid", "sent", "transferred"]
 
-    return "income" if credit_score > debit_score else "expense"
+    income_score = 0
+    expense_score = 0
+
+    for kw in strong_income:
+        if kw in lower:
+            income_score += 3
+    for kw in moderate_income:
+        if kw in lower:
+            income_score += 2
+    for kw in strong_expense:
+        if kw in lower:
+            expense_score += 3
+    for kw in moderate_expense:
+        if kw in lower:
+            expense_score += 2
+    for kw in weak_expense:
+        if kw in lower:
+            expense_score += 1
+
+    return "income" if income_score > expense_score else "expense"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

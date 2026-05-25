@@ -252,8 +252,12 @@ def normalize_columns(df: pd.DataFrame, profile: dict) -> pd.DataFrame:
 
     result = pd.DataFrame()
 
+    # Always create 'date' column — empty string if no date column found
     if date_col:
         result["date"] = df[date_col]
+    else:
+        result["date"] = ""
+
     if narr_col:
         result["description"] = df[narr_col].fillna("")
     elif ref_col:
@@ -264,10 +268,10 @@ def normalize_columns(df: pd.DataFrame, profile: dict) -> pd.DataFrame:
     # Handle amount — some banks have single Amount column, others have Debit/Credit
     if debit_col and credit_col:
         result["debit"] = pd.to_numeric(
-            df[debit_col].astype(str).str.replace(",", "").str.strip(), errors="coerce"
+            df[debit_col].astype(str).str.replace(",", "").str.replace(" ", "").str.strip(), errors="coerce"
         ).fillna(0)
         result["credit"] = pd.to_numeric(
-            df[credit_col].astype(str).str.replace(",", "").str.strip(), errors="coerce"
+            df[credit_col].astype(str).str.replace(",", "").str.replace(" ", "").str.strip(), errors="coerce"
         ).fillna(0)
     else:
         # Try single "Amount" column
@@ -385,12 +389,17 @@ def _read_excel(file_bytes: bytes) -> pd.DataFrame:
     return pd.read_excel(io.BytesIO(file_bytes), dtype=str)
 
 
+# Known date-like patterns to identify header rows
+_DATE_PATTERN = re.compile(
+    r'\b(\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\b',
+    re.IGNORECASE
+)
+
 def _read_pdf(file_bytes: bytes) -> pd.DataFrame:
-    """Extract tables from PDF using pdfplumber."""
+    """Extract tables from PDF using pdfplumber with smart header detection."""
     import pdfplumber
 
-    all_data = []
-    headers = None
+    all_rows = []  # (is_header_candidate, row_list)
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
@@ -399,18 +408,41 @@ def _read_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if not table:
                     continue
                 for row in table:
-                    cleaned = [str(c).strip() if c else "" for c in row]
-                    if not headers and any(cleaned):
-                        # Use first non-empty row as header
-                        headers = cleaned
-                    else:
-                        all_data.append(cleaned)
+                    cleaned = [str(c).strip().replace('\n', ' ') if c else "" for c in row]
+                    if any(cleaned):
+                        all_rows.append(cleaned)
 
-    if not headers:
+    if not all_rows:
         raise ValueError("No table found in PDF.")
 
-    # Ensure all rows match header length
-    data = [r for r in all_data if len(r) == len(headers)]
+    # Find header row — the first row that doesn't look like a date/amount row
+    # but looks like column labels (contains keywords like Date, Amount, Debit, etc.)
+    header_kw = {"date", "amount", "debit", "credit", "balance", "narration",
+                 "description", "particulars", "withdrawal", "deposit",
+                 "txn", "transaction", "ref", "sl", "no", "dr", "cr"}
+    header_idx = 0
+    for i, row in enumerate(all_rows[:15]):  # Only check first 15 rows
+        row_lower = " ".join(row).lower()
+        matches = sum(1 for kw in header_kw if kw in row_lower)
+        if matches >= 2:  # At least 2 header keywords → this is the header
+            header_idx = i
+            break
+
+    headers = all_rows[header_idx]
+    data_rows = all_rows[header_idx + 1:]
+
+    # Ensure all rows match header length (pad or trim)
+    n = len(headers)
+    data = []
+    for r in data_rows:
+        if len(r) < n:
+            r = r + [""] * (n - len(r))
+        data.append(r[:n])
+
+    # Remove duplicate header rows that sneak in from multi-page PDFs
+    header_set = set(h.lower().strip() for h in headers)
+    data = [r for r in data if not (sum(1 for c in r if c.lower().strip() in header_set) >= 3)]
+
     return pd.DataFrame(data, columns=headers)
 
 
@@ -444,6 +476,12 @@ def parse_statement_to_df(file_bytes: bytes, ext: str, bank_hint: str = None) ->
     norm_df = normalize_columns(raw_df, profile)
 
     # 4. Parse dates
+    if "date" not in norm_df.columns or norm_df["date"].astype(str).str.strip().eq("").all():
+        raise ValueError(
+            f"Could not find a date column in the statement. "
+            f"Columns found: {list(raw_df.columns)}. "
+            f"Try selecting your bank manually."
+        )
     norm_df["trans_date"] = norm_df["date"].apply(lambda x: _parse_date(x, profile["date_formats"]))
     norm_df = norm_df.dropna(subset=["trans_date"])
 
