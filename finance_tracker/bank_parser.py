@@ -320,16 +320,60 @@ def normalize_columns(df: pd.DataFrame, profile: dict) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_date(val, formats: list):
-    """Try parsing a date string with multiple formats."""
+    """Try parsing a date string with multiple formats.
+    
+    Handles:
+    - Text dates: '01-04-2026', '01/04/2026'
+    - ISO timestamps from Excel: '2026-04-01 00:00:00'
+    - Excel serial numbers: '46113'
+    - Named months: '01 Apr 2026', '01-Apr-2026'
+    """
     if pd.isna(val) or str(val).strip() == "":
         return None
     s = str(val).strip()
+
+    # Strip time portion if present (e.g. "2026-04-01 00:00:00" → "2026-04-01")
+    s = re.sub(r'\s+\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$', '', s, flags=re.IGNORECASE).strip()
+
+    # Handle Excel serial number (pure numeric, typically 5 digits like 46113)
+    if re.match(r'^\d{5}(\.\d+)?$', s):
+        try:
+            from datetime import timedelta
+            serial = float(s)
+            # Excel epoch: Jan 0, 1900 (with the 1900 leap year bug)
+            base = datetime(1899, 12, 30)
+            return (base + timedelta(days=serial)).date()
+        except Exception:
+            pass
+
+    # Try explicit formats first
     for fmt in formats:
         try:
             return datetime.strptime(s, fmt).date()
         except (ValueError, TypeError):
             continue
-    # Last resort — pandas
+
+    # Try common additional formats not in the profile
+    extra_formats = [
+        "%Y-%m-%d",      # ISO: 2026-04-01
+        "%Y/%m/%d",      # ISO variant
+        "%d-%m-%Y",      # DD-MM-YYYY
+        "%d/%m/%Y",      # DD/MM/YYYY
+        "%d-%b-%Y",      # 01-Apr-2026
+        "%d %b %Y",      # 01 Apr 2026
+        "%d %B %Y",      # 01 April 2026
+        "%m-%d-%Y",      # MM-DD-YYYY (US)
+        "%m/%d/%Y",      # MM/DD/YYYY (US)
+        "%d/%m/%y",      # DD/MM/YY
+        "%d-%m-%y",      # DD-MM-YY
+    ]
+    for fmt in extra_formats:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except (ValueError, TypeError):
+            continue
+
+    # Last resort — pandas auto-detection
     try:
         return pd.to_datetime(s, dayfirst=True).date()
     except Exception:
