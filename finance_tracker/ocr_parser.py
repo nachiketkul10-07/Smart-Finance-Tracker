@@ -12,150 +12,118 @@ import re
 from datetime import datetime, date
 from typing import Optional
 
-# Lazy-load EasyOCR reader (downloads ~100MB model on first use)
-_reader = None
-
-def _get_reader():
-    global _reader
-    if _reader is None:
-        import easyocr
-        _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-    return _reader
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# IMAGE PREPROCESSING — Multiple strategies for different screenshot types
+# OCR ENGINE — Uses pytesseract (lightweight) with Pillow preprocessing
+# Falls back to easyocr if pytesseract is unavailable
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _decode_image(img_bytes: bytes):
-    """Decode image bytes to OpenCV BGR image."""
-    import cv2
+def _ocr_with_pytesseract(img_pil):
+    """Run pytesseract OCR on a PIL Image."""
+    import pytesseract
+    text = pytesseract.image_to_string(img_pil, lang="eng")
+    return text
+
+def _ocr_with_easyocr(img_bytes):
+    """Fallback: use easyocr if available."""
+    import easyocr
     import numpy as np
+    reader = easyocr.Reader(["en"], gpu=False, verbose=False)
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    import cv2
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError("Could not decode image. Check file format.")
-    return img
+        return ""
+    results = reader.readtext(img, detail=1, paragraph=False)
+    # Sort by Y position
+    results.sort(key=lambda r: r[0][0][1])
+    return "\n".join(r[1].strip() for r in results if r[1].strip())
 
 
-def _upscale_if_small(img, min_dim: int = 1200):
-    """Upscale small images for better OCR accuracy."""
-    import cv2
-    h, w = img.shape[:2]
-    if max(h, w) < min_dim:
-        scale = min_dim / max(h, w)
-        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    return img
+def _preprocess_pil(img_pil):
+    """Preprocess PIL image for better OCR: grayscale, contrast, sharpen."""
+    from PIL import ImageEnhance, ImageFilter
+    # Convert to grayscale
+    gray = img_pil.convert("L")
+    # Enhance contrast
+    enhancer = ImageEnhance.Contrast(gray)
+    enhanced = enhancer.enhance(2.0)
+    # Sharpen
+    sharpened = enhanced.filter(ImageFilter.SHARPEN)
+    return sharpened
 
 
-def preprocess_v1_adaptive(img):
-    """Strategy 1: Adaptive threshold — good for light mode screenshots."""
-    import cv2
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    binary = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8
-    )
-    return cv2.fastNlMeansDenoising(binary, h=10)
+def _preprocess_dark_mode(img_pil):
+    """Preprocess dark mode screenshots: invert colors first."""
+    from PIL import ImageOps, ImageEnhance, ImageFilter
+    gray = img_pil.convert("L")
+    # Check if dark mode (mean pixel value < 128)
+    import statistics
+    pixels = list(gray.getdata())
+    mean_val = statistics.mean(pixels[:1000])  # Sample first 1000 pixels
+    if mean_val < 128:
+        gray = ImageOps.invert(gray)
+    enhancer = ImageEnhance.Contrast(gray)
+    enhanced = enhancer.enhance(2.0)
+    sharpened = enhanced.filter(ImageFilter.SHARPEN)
+    return sharpened
 
-
-def preprocess_v2_contrast(img):
-    """Strategy 2: CLAHE contrast enhancement — good for dark mode screenshots."""
-    import cv2
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binary
-
-
-def preprocess_v3_sharpen(img):
-    """Strategy 3: Sharpen + simple threshold — good for blurry screenshots."""
-    import cv2
-    import numpy as np
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    sharpened = cv2.filter2D(gray, -1, kernel)
-    _, binary = cv2.threshold(sharpened, 127, 255, cv2.THRESH_BINARY)
-    return binary
-
-
-def preprocess_v4_invert(img):
-    """Strategy 4: Inverted for dark mode — white text on dark background."""
-    import cv2
-    import numpy as np
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    mean_val = np.mean(gray)
-    if mean_val < 128:  # Dark mode detected
-        gray = cv2.bitwise_not(gray)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binary
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TEXT EXTRACTION — Multi-pass OCR for maximum accuracy
-# ══════════════════════════════════════════════════════════════════════════════
 
 def extract_text(img_bytes: bytes) -> list:
     """
-    Run EasyOCR with multiple preprocessing strategies.
-    Returns list of (text, confidence) tuples sorted top-to-bottom.
+    Run OCR with multiple preprocessing strategies.
+    Returns list of (text, confidence) tuples.
+    Uses pytesseract (lightweight) by default, falls back to easyocr.
     """
-    reader = _get_reader()
-    img = _decode_image(img_bytes)
-    img = _upscale_if_small(img)
+    from PIL import Image
 
-    all_results = []
+    img_pil = Image.open(io.BytesIO(img_bytes))
 
-    # Pass 1: Raw image (often best for modern screenshots)
+    # Upscale small images
+    w, h = img_pil.size
+    if max(w, h) < 1200:
+        scale = 1200 / max(w, h)
+        img_pil = img_pil.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    all_texts = []
+
+    # Try pytesseract first (lightweight)
     try:
-        results = reader.readtext(img, detail=1, paragraph=False)
-        all_results.extend(results)
+        # Pass 1: Standard preprocessing
+        processed = _preprocess_pil(img_pil)
+        text1 = _ocr_with_pytesseract(processed)
+        if text1.strip():
+            all_texts.append(text1)
+
+        # Pass 2: Dark mode preprocessing
+        processed2 = _preprocess_dark_mode(img_pil)
+        text2 = _ocr_with_pytesseract(processed2)
+        if text2.strip():
+            all_texts.append(text2)
+
+        # Pass 3: Raw image
+        text3 = _ocr_with_pytesseract(img_pil)
+        if text3.strip():
+            all_texts.append(text3)
+
     except Exception:
-        pass
+        # If pytesseract fails, try easyocr
+        try:
+            text = _ocr_with_easyocr(img_bytes)
+            if text.strip():
+                all_texts.append(text)
+        except Exception:
+            pass
 
-    # Pass 2: CLAHE contrast enhanced (dark mode)
-    try:
-        processed = preprocess_v2_contrast(img)
-        results = reader.readtext(processed, detail=1, paragraph=False)
-        all_results.extend(results)
-    except Exception:
-        pass
+    if not all_texts:
+        raise ValueError("OCR could not extract any text from the image. "
+                         "Make sure tesseract-ocr is installed.")
 
-    # Pass 3: Inverted dark mode
-    try:
-        processed = preprocess_v4_invert(img)
-        results = reader.readtext(processed, detail=1, paragraph=False)
-        all_results.extend(results)
-    except Exception:
-        pass
+    # Merge all OCR passes — use the one with the most text
+    best_text = max(all_texts, key=len)
 
-    # Pass 4: Adaptive threshold (light mode)
-    try:
-        processed = preprocess_v1_adaptive(img)
-        results = reader.readtext(processed, detail=1, paragraph=False)
-        all_results.extend(results)
-    except Exception:
-        pass
-
-    if not all_results:
-        raise ValueError("OCR could not extract any text from the image.")
-
-    # Deduplicate: keep highest confidence per unique text
-    seen = {}
-    for r in all_results:
-        txt = r[1].strip()
-        conf = r[2]
-        if txt and len(txt) >= 1:
-            key = txt.lower()
-            if key not in seen or conf > seen[key][2]:
-                seen[key] = r
-
-    results = list(seen.values())
-    results.sort(key=lambda r: r[0][0][1])  # Sort by Y position (top to bottom)
-
-    return [(r[1].strip(), r[2]) for r in results if r[1].strip()]
+    # Return as list of (line, confidence) tuples
+    lines = [line.strip() for line in best_text.split("\n") if line.strip()]
+    return [(line, 0.9) for line in lines]
 
 
 def get_raw_text(img_bytes: bytes) -> str:

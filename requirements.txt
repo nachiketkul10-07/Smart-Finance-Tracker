@@ -21,14 +21,13 @@ reportlab>=4.1.0
 # ── AI / ML ──────────────────────────────────────────────────────────────────
 scikit-learn>=1.4.0
 
-# ── Bank Statement Import (Phase 1) ─────────────────────────────────────────
+# ── Bank Statement Import ────────────────────────────────────────────────────
 pdfplumber>=0.10.0
 
-# ── UPI Screenshot OCR (Phase 2) ────────────────────────────────────────────
-easyocr>=1.7.0
-opencv-python-headless>=4.9.0
+# ── UPI Screenshot OCR (lightweight — uses system tesseract-ocr) ─────────────
+pytesseract>=0.3.10
 
-# ── Gmail Email Sync (Phase 3) ──────────────────────────────────────────────
+# ── Gmail Email Sync ─────────────────────────────────────────────────────────
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
