@@ -9,8 +9,9 @@ with helper rendering components kept modular.
 
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import os
+import json
 
 # ── Project imports ───────────────────────────────────────────────────────────
 from database import (
@@ -18,13 +19,16 @@ from database import (
     delete_transaction, set_budget, get_budgets, delete_budget,
     add_goal, get_goals, update_goal, delete_goal,
     add_recurring, get_recurring, delete_recurring,
-    reset_user_data, update_settings, get_settings
+    reset_user_data, update_settings, get_settings,
+    backup_user_data, restore_user_data
 )
 from auth     import is_logged_in, login, register, logout_user, get_current_user
 from analytics import (
     get_df, get_summary, chart_income_vs_expense, chart_expense_trend,
     chart_category_pie, chart_savings_trend, chart_top_categories,
-    chart_daily_spending, chart_payment_mode, get_budget_comparison
+    chart_daily_spending, chart_payment_mode, get_budget_comparison,
+    get_dashboard_metrics, chart_spending_prediction, chart_monthly_comparison,
+    get_category_comparison, chart_yearly_summary
 )
 from ai_insights import get_insights
 from export_utils import export_excel, export_pdf
@@ -33,7 +37,7 @@ from export_utils import export_excel, export_pdf
 from utils import (
     INCOME_CATEGORIES, EXPENSE_CATEGORIES, PAYMENT_MODES, CURRENCIES,
     auto_detect_category, fmt_currency, month_options, current_month,
-    load_sample_data, CATEGORY_COLORS
+    load_sample_data, CATEGORY_COLORS, validate_amount, validate_note
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -267,6 +271,7 @@ def page_dashboard():
     sym     = get_sym()
     summary = get_summary(uid)
     today   = date.today()
+    db_metrics = get_dashboard_metrics(uid)
 
     section_title("🏠", "Dashboard",
                   f"Welcome back! Here's your financial overview — {today.strftime('%d %B %Y')}")
@@ -283,8 +288,9 @@ def page_dashboard():
         kpi_card("Net Savings", fmt_currency(summary["net_savings"], sym),
                  "green" if summary["net_savings"] >= 0 else "red", "🏦", "All time")
     with c4:
-        kpi_card("This Month", fmt_currency(summary["month_savings"], sym),
-                 "accent", "📅", today.strftime("%B %Y"))
+        kpi_card("This Month Net", fmt_currency(summary["month_savings"], sym),
+                 "accent" if summary["month_savings"] >= 0 else "red", "📅", 
+                 f"{db_metrics['monthly_savings_growth_pct']:+.1f}% vs last month")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -292,15 +298,33 @@ def page_dashboard():
     cm1, cm2, cm3 = st.columns(3)
     with cm1:
         kpi_card("Month Income", fmt_currency(summary["month_income"], sym),
-                 "green", "📈", today.strftime("%B"))
+                 "green", "📈", f"{db_metrics['monthly_income_growth_pct']:+.1f}% MoM")
     with cm2:
         kpi_card("Month Expense", fmt_currency(summary["month_expense"], sym),
-                 "red", "📉", today.strftime("%B"))
+                 "red", "📉", f"{db_metrics['monthly_expense_growth_pct']:+.1f}% MoM")
     with cm3:
         rate = (summary["month_savings"] / summary["month_income"] * 100
                 if summary["month_income"] > 0 else 0)
         kpi_card("Savings Rate", f"{rate:.1f}%",
-                 "accent", "💹", "This month")
+                 "accent", "% ", "This month")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Advanced Portfolio Stats row ──────────────────────────────────────────
+    ca1, ca2, ca3, ca4 = st.columns(4)
+    with ca1:
+        health_color = "green" if db_metrics['financial_health_score'] >= 80 else ("yellow" if db_metrics['financial_health_score'] >= 50 else "red")
+        kpi_card("Financial Health", f"{db_metrics['financial_health_score']}/100",
+                 health_color, "⚡", "Score based on habits")
+    with ca2:
+        kpi_card("Top Category", db_metrics['top_spending_category'],
+                 "red", "🏷️", "Highest spend")
+    with ca3:
+        kpi_card("Best Month", db_metrics['best_month'],
+                 "green", "🏆", f"Worst: {db_metrics['worst_month']}")
+    with ca4:
+        kpi_card("Expense/Savings Trend", f"{db_metrics['expense_trend_indicator']} / {db_metrics['savings_trend_indicator']}",
+                 "blue", "📈", "MoM comparison direction")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -388,13 +412,14 @@ def page_transactions():
                 c1, c2 = st.columns(2)
                 with c1:
                     amount   = st.number_input("Amount", min_value=0.01, step=0.01, format="%.2f")
-                    category = st.selectbox("Category", categories)
+                    category = st.selectbox("Category", category_list := list(categories))
                 with c2:
                     trans_date   = st.date_input("Date", value=date.today())
-                    payment_mode = st.selectbox("Payment Mode", PAYMENT_MODES)
+                    payment_mode = st.selectbox("Payment Mode", list(PAYMENT_MODES))
 
                 note = st.text_input("Note / Description",
                                      placeholder="e.g. Swiggy biryani order")
+                tags = st.text_input("Tags (comma separated)", placeholder="food, weekend, vacation")
 
                 # Auto detect category from note
                 auto_cat = auto_detect_category(note, t_type) if note else None
@@ -404,11 +429,15 @@ def page_transactions():
                 submitted = st.form_submit_button("💾 Save Transaction",
                                                    use_container_width=True)
                 if submitted:
-                    if amount <= 0:
-                        st.error("Amount must be greater than 0.")
+                    ok_amt, err_amt = validate_amount(amount)
+                    ok_note, err_note = validate_note(note)
+                    if not ok_amt:
+                        st.error(err_amt)
+                    elif not ok_note:
+                        st.error(err_note)
                     else:
                         add_transaction(uid, t_type, amount, category,
-                                        note, payment_mode, trans_date)
+                                        note, payment_mode, trans_date, tags=tags)
                         st.success(f"✅ {t_type.capitalize()} of {fmt_currency(amount, sym)} saved!")
                         st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
@@ -427,7 +456,7 @@ def page_transactions():
             for label, amt, cat, typ in quick:
                 if st.button(label, use_container_width=True, key=f"qa_{label}"):
                     add_transaction(uid, typ, amt, cat, label.split(" ", 1)[1],
-                                    "UPI", date.today())
+                                    "UPI", date.today(), tags="quick-add")
                     st.success(f"Added: {label} — {fmt_currency(amt, sym)}")
                     st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
@@ -444,19 +473,39 @@ def page_transactions():
         with fc3:
             f_type = st.selectbox("🔄 Type", ["All", "income", "expense"], key="txn_type")
         with fc4:
-            f_search = st.text_input("🔍 Search Note", placeholder="keyword...", key="txn_search")
+            f_search = st.text_input("🔍 Search", placeholder="keyword, tag, or note...", key="txn_search")
+
+        # Sort and Tag filters
+        fs1, fs2 = st.columns(2)
+        with fs1:
+            sort_by = st.selectbox("Sort By", ["Date (Newest)", "Date (Oldest)", "Amount (Highest)", "Amount (Lowest)", "Category (A-Z)"], key="txn_sort")
+        with fs2:
+            f_tag = st.text_input("🏷️ Filter by Tag", placeholder="e.g. vacation", key="txn_tag")
 
         filters = {}
         if f_month != "All":    filters["month"]    = f_month
         if f_cat   != "All":    filters["category"] = f_cat
         if f_type  != "All":    filters["type"]     = f_type
         if f_search:            filters["search"]   = f_search
+        if f_tag:               filters["tag"]      = f_tag
 
         df = get_df(uid, filters)
 
         if df.empty:
             empty_state("🔍", "No transactions found", "Try adjusting your filters.")
             return
+
+        # Sort the DataFrame
+        if sort_by == "Date (Newest)":
+            df = df.sort_values(["trans_date", "id"], ascending=[False, False])
+        elif sort_by == "Date (Oldest)":
+            df = df.sort_values(["trans_date", "id"], ascending=[True, True])
+        elif sort_by == "Amount (Highest)":
+            df = df.sort_values("amount", ascending=False)
+        elif sort_by == "Amount (Lowest)":
+            df = df.sort_values("amount", ascending=True)
+        elif sort_by == "Category (A-Z)":
+            df = df.sort_values("category", ascending=True)
 
         # Summary strip
         total_inc = df[df["type"] == "income"]["amount"].sum()
@@ -479,11 +528,40 @@ def page_transactions():
         </div>
         """, unsafe_allow_html=True)
 
+        # Bulk Delete Option
+        with st.expander("🚨 Bulk Delete Actions"):
+            txn_options = df["id"].tolist()
+            def get_txn_label(i):
+                match = df[df['id'] == i]
+                if not match.empty:
+                    row_val = match.iloc[0]
+                    note_val = row_val.get('note') or row_val.get('category') or "Unspecified"
+                    return f"ID {i} — {note_val} ({fmt_currency(row_val['amount'], sym)})"
+                return f"ID {i}"
+            
+            bulk_del_ids = st.multiselect(
+                "Select Transactions to Delete",
+                options=txn_options,
+                format_func=get_txn_label
+            )
+            if bulk_del_ids:
+                if st.button("🚨 Bulk Delete Selected", type="primary", use_container_width=True, key="bulk_del_btn"):
+                    for tid in bulk_del_ids:
+                        delete_transaction(tid, uid)
+                    st.success("Selected transactions deleted successfully.")
+                    st.rerun()
+
         # Transaction list with edit/delete
         for _, row in df.iterrows():
             color   = "#00B894" if row["type"] == "income" else "#FF6B6B"
             sign    = "+" if row["type"] == "income" else "-"
             cat_dot = CATEGORY_COLORS.get(row["category"], "#888")
+
+            # Format tags list
+            tags_html = ""
+            if row.get("tags"):
+                tags_list = [t.strip() for t in row["tags"].split(",") if t.strip()]
+                tags_html = " ".join(f"<span style='background:rgba(108,92,231,0.15);color:#a29bfe;padding:1px 6px;font-size:0.7rem;border-radius:4px;margin-right:4px;'>#{t}</span>" for t in tags_list)
 
             col_main, col_actions = st.columns([5, 1])
             with col_main:
@@ -499,7 +577,7 @@ def page_transactions():
                                 {row.get('note') or row['category']}
                             </div>
                             <div style="font-size:0.75rem;color:#a0a0c0;">
-                                {row['category']} • {row['trans_date'].strftime('%d %b %Y')} • {row.get('payment_mode','')}
+                                {row['category']} • {row['trans_date'].strftime('%d %b %Y')} • {row.get('payment_mode','')} {tags_html}
                             </div>
                         </div>
                     </div>
@@ -516,14 +594,14 @@ def page_transactions():
                     st.success("Deleted.")
                     st.rerun()
 
-        # Edit form in expander
-        with st.expander("✏️ Edit a Transaction"):
+        # Edit/Duplicate form in expander
+        with st.expander("✏️ Edit or Duplicate a Transaction"):
             txn_ids = df["id"].tolist()
             if txn_ids:
                 sel_id = st.selectbox(
-                    "Select Transaction ID",
+                    "Select Transaction ID to Edit/Duplicate",
                     txn_ids,
-                    format_func=lambda i: f"ID {i} — {df[df['id']==i]['note'].values[0] or df[df['id']==i]['category'].values[0]}"
+                    format_func=lambda i: f"ID {i} — {df[df['id']==i]['note'].values[0] or df[df['id']==i]['category'].values[0]} ({fmt_currency(df[df['id']==i]['amount'].values[0], sym)})"
                 )
                 sel_row = df[df["id"] == sel_id].iloc[0]
                 with st.form("edit_txn"):
@@ -537,17 +615,42 @@ def page_transactions():
                                             if sel_row["category"] in (EXPENSE_CATEGORIES
                                             if sel_row["type"] == "expense" else INCOME_CATEGORIES) else 0)
                     e_note   = st.text_input("Note", value=sel_row.get("note", "") or "")
-                    e_mode   = st.selectbox("Payment Mode", PAYMENT_MODES,
+                    e_mode   = st.selectbox("Payment Mode", list(PAYMENT_MODES),
                                             index=PAYMENT_MODES.index(sel_row["payment_mode"])
                                             if sel_row["payment_mode"] in PAYMENT_MODES else 0)
                     e_date   = st.date_input("Date", value=sel_row["trans_date"].date())
-                    if st.form_submit_button("✅ Update"):
-                        update_transaction(sel_id, uid, amount=e_amount,
-                                           category=e_cat, note=e_note,
-                                           payment_mode=e_mode,
-                                           trans_date=str(e_date))
-                        st.success("Transaction updated!")
-                        st.rerun()
+                    e_tags   = st.text_input("Tags", value=sel_row.get("tags", "") or "")
+
+                    c_btn1, c_btn2 = st.columns(2)
+                    with c_btn1:
+                        if st.form_submit_button("✅ Update Transaction", use_container_width=True):
+                            ok_amt, err_amt = validate_amount(e_amount)
+                            ok_note, err_note = validate_note(e_note)
+                            if not ok_amt:
+                                st.error(err_amt)
+                            elif not ok_note:
+                                st.error(err_note)
+                            else:
+                                update_transaction(sel_id, uid, amount=e_amount,
+                                                   category=e_cat, note=e_note,
+                                                   payment_mode=e_mode,
+                                                   trans_date=str(e_date), tags=e_tags)
+                                st.success("Transaction updated!")
+                                st.rerun()
+                    with c_btn2:
+                        if st.form_submit_button("👯 Duplicate Transaction", use_container_width=True):
+                            ok_amt, err_amt = validate_amount(e_amount)
+                            ok_note, err_note = validate_note(e_note)
+                            if not ok_amt:
+                                st.error(err_amt)
+                            elif not ok_note:
+                                st.error(err_note)
+                            else:
+                                add_transaction(uid, sel_row["type"], e_amount, e_cat,
+                                                f"Copy: {e_note}" if e_note else f"Copy: {e_cat}",
+                                                e_mode, str(e_date), tags=e_tags)
+                                st.success("Transaction duplicated!")
+                                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -557,6 +660,15 @@ def page_transactions():
 def page_analytics():
     uid = st.session_state["user_id"]
     section_title("📊", "Analytics", "Deep dive into your spending patterns and trends")
+
+    # Ratio indicator
+    db_metrics = get_dashboard_metrics(uid)
+    st.markdown(f"""
+    <div style="background:#1a1a2e;padding:0.7rem 1.2rem;border-radius:10px;margin-bottom:1.2rem;border:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:0.88rem;color:#a0a0c0;">📉 Income vs Expense Ratio (All Time)</span>
+        <span style="font-family:'Sora';font-weight:700;font-size:1.1rem;color:{'#00B894' if db_metrics['income_vs_expense_ratio']<=100 else '#FF6B6B'};">{db_metrics['income_vs_expense_ratio']}%</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     months = ["All"] + month_options(12)
     sel_month = st.selectbox("Filter by Month", months, key="anal_month")
@@ -585,6 +697,31 @@ def page_analytics():
 
     # Payment mode
     st.plotly_chart(chart_payment_mode(uid), use_container_width=True, key="ch_pay_mode")
+
+    # Row 4: Trend prediction & Monthly comparison
+    st.markdown("<br>", unsafe_allow_html=True)
+    c7, c8 = st.columns(2)
+    with c7:
+        st.plotly_chart(chart_spending_prediction(uid), use_container_width=True, key="ch_predict")
+    with c8:
+        st.plotly_chart(chart_monthly_comparison(uid), use_container_width=True, key="ch_monthly_comp")
+
+    # Row 5: Yearly summary & MoM category comparison
+    st.markdown("<br>", unsafe_allow_html=True)
+    c9, c10 = st.columns(2)
+    with c9:
+        st.plotly_chart(chart_yearly_summary(uid), use_container_width=True, key="ch_yearly")
+    with c10:
+        st.markdown("<div class='card' style='height:100%;'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>📈 MoM Category Growth Comparison</div>", unsafe_allow_html=True)
+        cat_comp_df = get_category_comparison(uid)
+        if not cat_comp_df.empty:
+            cat_comp_disp = cat_comp_df.copy()
+            cat_comp_disp.columns = ["Category", "Prev Month Spend", "Curr Month Spend", "Difference", "Change %"]
+            st.dataframe(cat_comp_disp, use_container_width=True, hide_index=True)
+        else:
+            st.info("Insufficient data to compare MoM categories growth.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -621,6 +758,43 @@ def page_budget():
             empty_state("📋", "No budgets set",
                         f"Set budgets for {sel_month} using the 'Set Budget' tab above.")
             return
+
+        # Overall budget utilization indicator
+        total_budget = df_budget["budget"].sum()
+        total_spent = df_budget["spent"].sum()
+        if total_budget > 0:
+            total_pct = (total_spent / total_budget) * 100
+            total_pct_cap = min(total_pct, 100.0)
+            overall_fill_class = "ok" if total_pct <= 75 else ("warn" if total_pct <= 100 else "over")
+            
+            st.markdown(f"""
+            <div class="card" style="margin-bottom:1.5rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">
+                    <span style="font-weight:700;font-size:0.95rem;color:#f0f0ff;">📊 Overall Budget Utilization</span>
+                    <span style="font-family:'Sora';font-weight:700;font-size:1.05rem;color:{'#00B894' if total_pct <= 100 else '#FF6B6B'}">
+                        {fmt_currency(total_spent, sym)} / {fmt_currency(total_budget, sym)} ({total_pct:.1f}%)
+                    </span>
+                </div>
+                <div class="progress-bar" style="height:10px;margin-bottom:0.4rem;">
+                    <div class="progress-fill {overall_fill_class}" style="width:{total_pct_cap}%;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Overall or critical category warnings
+            overspent_cats = df_budget[df_budget["pct_used"] > 100]
+            warning_cats = df_budget[(df_budget["pct_used"] > 80) & (df_budget["pct_used"] <= 100)]
+            
+            for _, row in overspent_cats.iterrows():
+                over_amt = row["spent"] - row["budget"]
+                insight_card("⚠️", f"Budget Exceeded: {row['category']}", 
+                             f"You have spent {fmt_currency(row['spent'], sym)} against a budget of {fmt_currency(row['budget'], sym)} (exceeded by {fmt_currency(over_amt, sym)}).", 
+                             "warning")
+            for _, row in warning_cats.iterrows():
+                insight_card("💡", f"Approaching Budget Limit: {row['category']}", 
+                             f"You have used {row['pct_used']}% of your budget ({fmt_currency(row['spent'], sym)} of {fmt_currency(row['budget'], sym)}).", 
+                             "info")
+            st.markdown("<br>", unsafe_allow_html=True)
 
         for _, row in df_budget.iterrows():
             pct  = row["pct_used"]
@@ -677,6 +851,7 @@ def page_goals():
             with c1:
                 g_name   = st.text_input("Goal Name", placeholder="e.g. New Laptop")
                 g_target = st.number_input("Target Amount", min_value=1.0, step=500.0)
+                g_priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=1)
             with c2:
                 g_saved    = st.number_input("Already Saved", min_value=0.0, step=100.0)
                 g_deadline = st.date_input("Target Date (optional)",
@@ -684,7 +859,7 @@ def page_goals():
             if st.form_submit_button("🎯 Create Goal", use_container_width=True):
                 if g_name.strip():
                     add_goal(uid, g_name.strip(), g_target, g_saved,
-                             str(g_deadline))
+                             str(g_deadline), priority=g_priority)
                     st.success(f"Goal '{g_name}' created!")
                     st.rerun()
                 else:
@@ -701,29 +876,66 @@ def page_goals():
             pct_cap = min(pct, 100)
             remain  = g["target_amount"] - g["saved_amount"]
 
-            # Estimate months to reach goal (simple monthly rate)
+            # Priority flags display next to goal name
+            p_val = g.get("priority", "Medium") or "Medium"
+            if p_val == "High":
+                p_flag = "<span style='background:rgba(255,107,107,0.15);color:#FF6B6B;padding:2px 8px;font-size:0.75rem;border-radius:4px;font-weight:600;margin-left:8px;'>🔴 HIGH PRIORITY</span>"
+            elif p_val == "Low":
+                p_flag = "<span style='background:rgba(116,185,255,0.15);color:#74B9FF;padding:2px 8px;font-size:0.75rem;border-radius:4px;font-weight:600;margin-left:8px;'>🔵 LOW PRIORITY</span>"
+            else:
+                p_flag = "<span style='background:rgba(253,203,110,0.15);color:#FDCB6E;padding:2px 8px;font-size:0.75rem;border-radius:4px;font-weight:600;margin-left:8px;'>🟡 MEDIUM PRIORITY</span>"
+
+            # Estimate days / months to reach goal based on 3-month savings average
             df_all = get_df(uid)
+            eta = ""
+            deadline_status = ""
+            avg_save = 0.0
+            
             if not df_all.empty:
                 monthly_inc = df_all[df_all["type"] == "income"].groupby("month")["amount"].sum()
                 monthly_exp = df_all[df_all["type"] == "expense"].groupby("month")["amount"].sum()
-                last3_months = sorted(monthly_inc.index)[-3:]
-                avg_save = sum(
-                    monthly_inc.get(m, 0) - monthly_exp.get(m, 0)
-                    for m in last3_months
-                ) / max(len(last3_months), 1)
-                if avg_save > 0 and remain > 0:
-                    months_needed = remain / avg_save
-                    eta = f"~{months_needed:.1f} months at current rate"
+                # Get the last 3 active months
+                all_active_months = sorted(list(set(monthly_inc.index) | set(monthly_exp.index)))
+                last3_months = all_active_months[-3:]
+                
+                savings_sum = 0.0
+                for m in last3_months:
+                    savings_sum += (monthly_inc.get(m, 0.0) - monthly_exp.get(m, 0.0))
+                
+                avg_save = savings_sum / max(len(last3_months), 1)
+                
+                if remain <= 0:
+                    eta = "Goal Achieved! 🎉"
+                elif avg_save > 0:
+                    daily_save = avg_save / 30.437 # average days in a month
+                    days_needed = int(np.ceil(remain / daily_save))
+                    comp_date = date.today() + timedelta(days=days_needed)
+                    eta = f"Est. Completion: {comp_date.strftime('%d %b %Y')} (~{days_needed} days remaining, at {fmt_currency(avg_save, sym)}/mo savings)"
+                    
+                    # On track logic
+                    g_deadline_str = g.get("deadline")
+                    if g_deadline_str:
+                        try:
+                            g_deadline_dt = datetime.strptime(g_deadline_str, "%Y-%m-%d").date()
+                            days_to_deadline = (g_deadline_dt - date.today()).days
+                            if days_to_deadline > 0:
+                                required_monthly = (remain / days_to_deadline) * 30.437
+                                if avg_save >= required_monthly:
+                                    deadline_status = "<span style='background:rgba(0,184,148,0.15);color:#00B894;padding:2px 8px;font-size:0.75rem;border-radius:4px;font-weight:600;margin-left:8px;'>✓ ON TRACK</span>"
+                                else:
+                                    deadline_status = f"<span style='background:rgba(255,107,107,0.15);color:#FF6B6B;padding:2px 8px;font-size:0.75rem;border-radius:4px;font-weight:600;margin-left:8px;'>⚠️ OFF TRACK (Needs {fmt_currency(required_monthly, sym)}/mo)</span>"
+                        except Exception:
+                            pass
                 else:
-                    eta = "Increase your savings rate"
+                    eta = "⚠️ Savings rate is negative or zero. Increase savings to meet goal."
             else:
-                eta = "Add transactions to estimate"
+                eta = "Add transactions to estimate completion timeline"
 
             st.markdown(f"""
             <div class="goal-card">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;">
                     <div>
-                        <div class="goal-name">🎯 {g['name']}</div>
+                        <div class="goal-name">🎯 {g['name']} {p_flag} {deadline_status}</div>
                         <div class="goal-meta">
                             Target: {fmt_currency(g['target_amount'], sym)} &nbsp;•&nbsp;
                             Saved: {fmt_currency(g['saved_amount'], sym)} &nbsp;•&nbsp;
@@ -733,7 +945,7 @@ def page_goals():
                     <div class="goal-pct">{pct_cap:.1f}%</div>
                 </div>
                 <div class="progress-bar">
-                    <div class="progress-fill {'ok' if pct_cap < 80 else 'warn'}"
+                    <div class="progress-fill {'ok' if pct_cap >= 80 else 'warn'}"
                          style="width:{pct_cap}%;"></div>
                 </div>
                 <div style="font-size:0.78rem;color:#a0a0c0;margin-top:0.3rem;">
@@ -742,22 +954,33 @@ def page_goals():
             </div>
             """, unsafe_allow_html=True)
 
-            c_upd, c_del = st.columns([2, 1])
+            c_upd, c_del = st.columns([3, 1])
             with c_upd:
-                new_saved = st.number_input(
-                    f"Update saved amount for {g['name']}",
-                    value=float(g["saved_amount"]),
-                    min_value=0.0,
-                    step=100.0,
-                    key=f"upd_goal_{g['id']}",
-                )
-                if st.button(f"✅ Update", key=f"btn_upd_goal_{g['id']}"):
-                    update_goal(g["id"], uid, new_saved)
-                    st.success("Goal updated!")
-                    st.rerun()
+                with st.expander(f"✏️ Edit details for '{g['name']}'"):
+                    with st.form(f"edit_goal_form_{g['id']}"):
+                        e_name = st.text_input("Goal Name", value=g["name"])
+                        e_target = st.number_input("Target Amount", value=float(g["target_amount"]), min_value=1.0)
+                        e_saved = st.number_input("Saved Amount", value=float(g["saved_amount"]), min_value=0.0)
+                        e_priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=["High", "Medium", "Low"].index(p_val))
+                        
+                        d_val = date.today() + timedelta(days=180)
+                        if g.get("deadline"):
+                            try:
+                                d_val = datetime.strptime(g["deadline"], "%Y-%m-%d").date()
+                            except Exception:
+                                pass
+                        e_deadline = st.date_input("Target Date", value=d_val)
+                        
+                        if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                            if e_name.strip():
+                                update_goal(g["id"], uid, e_saved, name=e_name.strip(), target_amount=e_target, deadline=str(e_deadline), priority=e_priority)
+                                st.success("Goal details updated!")
+                                st.rerun()
+                            else:
+                                st.error("Goal name cannot be empty.")
             with c_del:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button(f"🗑️ Delete", key=f"del_goal_{g['id']}"):
+                if st.button(f"🗑️ Delete Goal", key=f"del_goal_{g['id']}", use_container_width=True):
                     delete_goal(g["id"], uid)
                     st.rerun()
 
@@ -924,6 +1147,22 @@ def page_import():
             # Detection info
             st.success(f"🏦 Detected: **{bank_name}** — {len(df)} transactions found")
 
+            # Duplicate transaction check
+            from bank_parser import flag_duplicate_transactions_in_df
+            df_flagged = flag_duplicate_transactions_in_df(df, uid)
+            dup_db_count = len(df_flagged[df_flagged["Status"] == "Duplicate (Exists)"])
+            dup_file_count = len(df_flagged[df_flagged["Status"] == "Duplicate (File)"])
+            total_dup = dup_db_count + dup_file_count
+            
+            if total_dup > 0:
+                warn_msg = f"⚠️ Found **{total_dup} duplicate transactions** in this statement."
+                if dup_db_count > 0:
+                    warn_msg += f" {dup_db_count} already exist in your database."
+                if dup_file_count > 0:
+                    warn_msg += f" {dup_file_count} are duplicates within the file itself."
+                warn_msg += " Duplicate transactions will be automatically skipped on import."
+                st.warning(warn_msg)
+
             # Summary strip
             inc_count = len(df[df['type'] == 'income'])
             exp_count = len(df[df['type'] == 'expense'])
@@ -944,9 +1183,11 @@ def page_import():
 
             # Preview table
             st.markdown("**Preview (first 20 rows):**")
-            preview = df.head(20).copy()
+            preview = df_flagged.head(20).copy()
             preview["trans_date"] = preview["trans_date"].astype(str)
-            st.dataframe(preview, use_container_width=True, hide_index=True)
+            cols_order = ["Status", "trans_date", "type", "amount", "category", "note", "payment_mode"]
+            cols_order = [c for c in cols_order if c in preview.columns]
+            st.dataframe(preview[cols_order], use_container_width=True, hide_index=True)
 
             # Import button
             if st.button("✅ Import All Transactions", use_container_width=True,
@@ -1327,9 +1568,57 @@ def page_settings():
             else:
                 st.error("Please type RESET to confirm.")
 
+    # JSON Backup & Restore section
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="card-title">💾 JSON Data Backup & Restore</div>', unsafe_allow_html=True)
+    cb1, cb2 = st.columns(2)
+    with cb1:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">📥 Export JSON Backup</div>
+            <div style="color:#a0a0c0;font-size:0.85rem;margin-bottom:1rem;">
+                Download your full transactions, budgets, goals, and preferences in a single portable JSON file.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        try:
+            backup_dict = backup_user_data(uid)
+            backup_json = json.dumps(backup_dict, indent=2)
+            st.download_button("⬇️ Download JSON Backup", backup_json,
+                               file_name=f"finance_data_{date.today()}.json",
+                               mime="application/json",
+                               use_container_width=True,
+                               key="json_backup_btn")
+        except Exception as e:
+            st.error(f"Failed to generate backup: {e}")
+
+    with cb2:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">📤 Import JSON Backup</div>
+            <div style="color:#a0a0c0;font-size:0.85rem;margin-bottom:1rem;">
+                Restore all your data from a valid JSON backup file.
+                <span style="color:#FF6B6B;">⚠️ Warning: This will overwrite your current settings, budgets, transactions, and goals!</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        restore_file = st.file_uploader("Upload JSON backup", type=["json"], key="json_restore_upload")
+        if restore_file:
+            try:
+                restore_data = json.loads(restore_file.read().decode("utf-8"))
+                if st.button("🚨 Confirm and Restore Data", type="primary", use_container_width=True, key="confirm_json_restore_btn"):
+                    if restore_user_data(uid, restore_data):
+                        st.success("✅ Financial data successfully restored!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to restore data. Check backup file format.")
+            except Exception as e:
+                st.error(f"❌ Error parsing backup: {e}")
+
     # DB Backup
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="card-title">💾 Data Backup</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">💾 SQLite Database Backup</div>', unsafe_allow_html=True)
     db_path = os.path.join(os.path.dirname(__file__), "data", "finance.db")
     if os.path.exists(db_path):
         with open(db_path, "rb") as f:
@@ -1337,7 +1626,8 @@ def page_settings():
         st.download_button("⬇️ Download Database Backup (.db)",
                            db_bytes,
                            file_name=f"finance_backup_{date.today()}.db",
-                           mime="application/octet-stream")
+                           mime="application/octet-stream",
+                           use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

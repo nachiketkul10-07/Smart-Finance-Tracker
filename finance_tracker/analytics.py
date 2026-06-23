@@ -10,15 +10,43 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+import streamlit as st
+import numpy as np
 from database import get_transactions
 from utils import CATEGORY_COLORS
+
+
+# ── Database trigger key helper for caching ───────────────────────────────────
+
+def get_db_trigger_key(user_id: int) -> str:
+    """Fetch a fast database summary key to automatically invalidate cached queries."""
+    from database import get_connection
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*), MAX(id), SUM(amount) FROM transactions WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        return f"{row[0]}_{row[1] or 0}_{row[2] or 0.0}"
+    except Exception:
+        return "empty"
+    finally:
+        conn.close()
 
 
 # ── DataFrame builder ────────────────────────────────────────────────────────
 
 def get_df(user_id: int, filters: dict = None) -> pd.DataFrame:
-    """Fetch transactions and return as a clean DataFrame."""
+    """Fetch transactions and return as a clean DataFrame (with caching)."""
+    trigger_key = get_db_trigger_key(user_id)
+    filters_tuple = tuple(sorted((k, v) for k, v in filters.items())) if filters else ()
+    return _get_df_cached(user_id, trigger_key, filters_tuple)
+
+
+@st.cache_data
+def _get_df_cached(user_id: int, trigger_key: str, filters_tuple: tuple) -> pd.DataFrame:
+    filters = dict(filters_tuple)
     rows = get_transactions(user_id, filters)
     if not rows:
         return pd.DataFrame(columns=[
@@ -32,6 +60,7 @@ def get_df(user_id: int, filters: dict = None) -> pd.DataFrame:
     df["day_name"]   = df["trans_date"].dt.strftime("%A")
     df["amount"]     = df["amount"].astype(float)
     return df
+
 
 
 # ── KPI summary ───────────────────────────────────────────────────────────────
@@ -302,3 +331,285 @@ def _empty_fig(message: str) -> go.Figure:
     )
     fig.update_layout(**CHART_LAYOUT)
     return fig
+
+
+# ── Smart Portfolio Metrics & Forecasts ───────────────────────────────────────
+
+def get_dashboard_metrics(user_id: int) -> dict:
+    """Calculate advanced growth, indicators, health score, and comparison metrics."""
+    df = get_df(user_id)
+    today = date.today()
+    curr_m = today.strftime("%Y-%m")
+    
+    # Calculate previous month
+    prev_month_date = today.replace(day=1) - timedelta(days=1)
+    prev_m = prev_month_date.strftime("%Y-%m")
+
+    metrics = {
+        "monthly_income_growth_pct": 0.0,
+        "monthly_expense_growth_pct": 0.0,
+        "monthly_savings_growth_pct": 0.0,
+        "expense_trend_indicator": "Stable",
+        "savings_trend_indicator": "Stable",
+        "best_month": "N/A",
+        "worst_month": "N/A",
+        "top_spending_category": "N/A",
+        "financial_health_score": 100,
+        "income_vs_expense_ratio": 0.0,
+    }
+
+    if df.empty:
+        return metrics
+
+    df_inc = df[df["type"] == "income"]
+    df_exp = df[df["type"] == "expense"]
+
+    inc_curr = df_inc[df_inc["month"] == curr_m]["amount"].sum()
+    inc_prev = df_inc[df_inc["month"] == prev_m]["amount"].sum()
+    
+    exp_curr = df_exp[df_exp["month"] == curr_m]["amount"].sum()
+    exp_prev = df_exp[df_exp["month"] == prev_m]["amount"].sum()
+
+    sav_curr = inc_curr - exp_curr
+    sav_prev = inc_prev - exp_prev
+
+    # Growth %
+    metrics["monthly_income_growth_pct"] = ((inc_curr - inc_prev) / inc_prev * 100) if inc_prev > 0 else 0.0
+    metrics["monthly_expense_growth_pct"] = ((exp_curr - exp_prev) / exp_prev * 100) if exp_prev > 0 else 0.0
+    metrics["monthly_savings_growth_pct"] = ((sav_curr - sav_prev) / abs(sav_prev) * 100) if sav_prev != 0 else 0.0
+
+    # Trend indicators
+    if exp_curr > exp_prev * 1.05:
+        metrics["expense_trend_indicator"] = "Rising"
+    elif exp_curr < exp_prev * 0.95:
+        metrics["expense_trend_indicator"] = "Falling"
+    else:
+        metrics["expense_trend_indicator"] = "Stable"
+
+    if sav_curr > sav_prev * 1.05:
+        metrics["savings_trend_indicator"] = "Rising"
+    elif sav_curr < sav_prev * 0.95:
+        metrics["savings_trend_indicator"] = "Falling"
+    else:
+        metrics["savings_trend_indicator"] = "Stable"
+
+    # Best and worst months
+    monthly_summary = []
+    all_months = df["month"].unique()
+    for m in all_months:
+        m_inc = df_inc[df_inc["month"] == m]["amount"].sum()
+        m_exp = df_exp[df_exp["month"] == m]["amount"].sum()
+        m_sav = m_inc - m_exp
+        try:
+            m_date = datetime.strptime(m, "%Y-%m")
+            m_name = m_date.strftime("%b %Y")
+        except Exception:
+            m_name = m
+        monthly_summary.append({"month": m, "name": m_name, "savings": m_sav})
+    
+    if monthly_summary:
+        best = max(monthly_summary, key=lambda x: x["savings"])
+        worst = min(monthly_summary, key=lambda x: x["savings"])
+        metrics["best_month"] = best["name"]
+        metrics["worst_month"] = worst["name"]
+
+    # Top spending category
+    if not df_exp.empty:
+        cat_sums = df_exp.groupby("category")["amount"].sum()
+        if not cat_sums.empty:
+            metrics["top_spending_category"] = cat_sums.idxmax()
+
+    # Financial Health Score (0-100)
+    score = 100
+    
+    # 1. Savings rate component (45 points)
+    total_inc = df_inc["amount"].sum()
+    total_exp = df_exp["amount"].sum()
+    if total_inc > 0:
+        overall_sav_rate = (total_inc - total_exp) / total_inc
+        if overall_sav_rate >= 0.30:
+            sav_points = 45
+        elif overall_sav_rate > 0:
+            sav_points = int(overall_sav_rate * (45 / 0.3))
+        else:
+            sav_points = 0
+        score -= (45 - sav_points)
+    else:
+        score -= 45
+
+    # 2. Budget utilization component (35 points)
+    from database import get_budgets
+    budgets = get_budgets(user_id, curr_m)
+    exceeded_count = 0
+    for b in budgets:
+        limit = b["amount"]
+        spent = df_exp[(df_exp["month"] == curr_m) & (df_exp["category"] == b["category"])]["amount"].sum()
+        if spent > limit:
+            exceeded_count += 1
+    if budgets:
+        pct_exceeded = exceeded_count / len(budgets)
+        score -= int(pct_exceeded * 35)
+
+    # 3. Savings goals component (20 points)
+    from database import get_goals
+    goals = get_goals(user_id)
+    if goals:
+        total_target = sum(g["target_amount"] for g in goals)
+        total_saved = sum(g["saved_amount"] for g in goals)
+        if total_target > 0:
+            progress = total_saved / total_target
+            score -= int((1.0 - min(progress, 1.0)) * 20)
+    else:
+        score -= 10
+
+    metrics["financial_health_score"] = max(0, min(100, score))
+
+    if total_inc > 0:
+        metrics["income_vs_expense_ratio"] = round((total_exp / total_inc) * 100, 1)
+    else:
+        metrics["income_vs_expense_ratio"] = 0.0
+
+    return metrics
+
+
+def chart_spending_prediction(user_id: int) -> go.Figure:
+    """Cumulative spending prediction chart with line regression extrapolation."""
+    df = get_df(user_id)
+    df_exp = df[df["type"] == "expense"]
+    if df_exp.empty:
+        return _empty_fig("No expense data yet for prediction")
+    
+    today = date.today()
+    curr_m = today.strftime("%Y-%m")
+    df_curr = df_exp[df_exp["month"] == curr_m].copy()
+    
+    if len(df_curr) < 2:
+        return _empty_fig("Need at least 2 transactions this month to forecast")
+        
+    df_curr["day"] = df_curr["trans_date"].dt.day
+    daily = df_curr.groupby("day")["amount"].sum().reset_index().sort_values("day")
+    daily["cum"] = daily["amount"].cumsum()
+    
+    try:
+        from sklearn.linear_model import LinearRegression
+        import calendar
+        
+        X = daily["day"].values.reshape(-1, 1)
+        y = daily["cum"].values
+        model = LinearRegression().fit(X, y)
+        
+        _, days_in_month = calendar.monthrange(today.year, today.month)
+        
+        days_seq = np.arange(1, days_in_month + 1).reshape(-1, 1)
+        pred_cum = model.predict(days_seq)
+        
+        pred_df = pd.DataFrame({
+            "day": np.arange(1, days_in_month + 1),
+            "predicted": pred_cum
+        })
+        
+        fig = go.Figure()
+        # Actual cumulative
+        fig.add_trace(go.Scatter(
+            x=daily["day"], y=daily["cum"],
+            mode="lines+markers",
+            name="Actual Spend",
+            line=dict(color="#FF6B6B", width=3),
+            marker=dict(size=6)
+        ))
+        # Forecasted cumulative
+        fig.add_trace(go.Scatter(
+            x=pred_df["day"], y=pred_df["predicted"],
+            mode="lines",
+            name="Forecasted Spend",
+            line=dict(color="#6C5CE7", width=2, dash="dash")
+        ))
+        
+        fig.update_layout(
+            **CHART_LAYOUT,
+            title="Spending Forecast (Cumulative)",
+            xaxis=dict(title="Day of Month", showgrid=False, tickmode="linear", tick0=1, dtick=5),
+            yaxis=dict(title="Cumulative Amount (₹)", showgrid=True, gridcolor="rgba(255,255,255,0.05)"),
+        )
+        return fig
+    except Exception as e:
+        return _empty_fig(f"Prediction forecast: {e}")
+
+
+def chart_monthly_comparison(user_id: int) -> go.Figure:
+    """Current Month vs Last Month comparison bar chart."""
+    df = get_df(user_id)
+    if df.empty:
+        return _empty_fig("No data available")
+    
+    monthly = df.groupby(["month", "month_name", "type"])["amount"].sum().reset_index()
+    unique_months = sorted(df["month"].unique())[-2:]
+    if len(unique_months) < 2:
+        return _empty_fig("Need at least 2 months of data to compare")
+        
+    monthly = monthly[monthly["month"].isin(unique_months)]
+    
+    fig = px.bar(
+        monthly, x="type", y="amount", color="month_name",
+        barmode="group",
+        color_discrete_sequence=["#6C5CE7", "#00B894"],
+        labels={"amount": "Amount (₹)", "type": "Transaction Type", "month_name": "Month"},
+        title="Current Month vs Last Month"
+    )
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
+
+
+def get_category_comparison(user_id: int) -> pd.DataFrame:
+    """Calculate Category spending change between current and previous month."""
+    df = get_df(user_id)
+    df_exp = df[df["type"] == "expense"]
+    if df_exp.empty:
+        return pd.DataFrame()
+        
+    today = date.today()
+    curr_m = today.strftime("%Y-%m")
+    prev_month_date = today.replace(day=1) - timedelta(days=1)
+    prev_m = prev_month_date.strftime("%Y-%m")
+    
+    curr_sums = df_exp[df_exp["month"] == curr_m].groupby("category")["amount"].sum()
+    prev_sums = df_exp[df_exp["month"] == prev_m].groupby("category")["amount"].sum()
+    
+    all_cats = list(set(curr_sums.index) | set(prev_sums.index))
+    rows = []
+    for cat in all_cats:
+        curr_amt = curr_sums.get(cat, 0.0)
+        prev_amt = prev_sums.get(cat, 0.0)
+        diff = curr_amt - prev_amt
+        pct = ((curr_amt - prev_amt) / prev_amt * 100) if prev_amt > 0 else 0.0
+        rows.append({
+            "category": cat,
+            "previous_amount": prev_amt,
+            "current_amount": curr_amt,
+            "difference": diff,
+            "change_pct": round(pct, 1)
+        })
+        
+    return pd.DataFrame(rows).sort_values("difference", ascending=False)
+
+
+def chart_yearly_summary(user_id: int) -> go.Figure:
+    """Yearly summary stacked bar chart."""
+    df = get_df(user_id)
+    if df.empty:
+        return _empty_fig("No data available")
+    
+    df = df.copy()
+    df["year"] = df["trans_date"].dt.strftime("%Y")
+    yearly = df.groupby(["year", "type"])["amount"].sum().reset_index()
+    
+    fig = px.bar(
+        yearly, x="year", y="amount", color="type",
+        barmode="group",
+        color_discrete_map={"income": "#00B894", "expense": "#FF6B6B"},
+        labels={"amount": "Amount (₹)", "year": "Year", "type": "Type"},
+        title="Yearly Summary"
+    )
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
+

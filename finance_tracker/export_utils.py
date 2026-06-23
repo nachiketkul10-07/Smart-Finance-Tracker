@@ -129,7 +129,8 @@ def export_excel(user_id: int, month: str = None, currency_symbol: str = "₹") 
 
 def export_pdf(user_id: int, month: str = None, currency_symbol: str = "₹") -> bytes:
     """
-    Build and return a PDF summary report using reportlab.
+    Build and return a professional PDF summary report using reportlab,
+    including summary statistics, progress bars, and clean layouts.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -137,60 +138,131 @@ def export_pdf(user_id: int, month: str = None, currency_symbol: str = "₹") ->
     from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
                                      Paragraph, Spacer, HRFlowable)
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.graphics.shapes import Drawing, Rect
 
     output = io.BytesIO()
     doc    = SimpleDocTemplate(output, pagesize=A4,
-                               rightMargin=2*cm, leftMargin=2*cm,
-                               topMargin=2*cm, bottomMargin=2*cm)
+                               rightMargin=1.5*cm, leftMargin=1.5*cm,
+                               topMargin=1.5*cm, bottomMargin=1.5*cm)
 
     styles  = getSampleStyleSheet()
     story   = []
     summary = get_summary(user_id, month or current_month())
 
-    # ── Style helpers ─────────────────────────────────────────────────────────
+    # ── Colors & Styles ───────────────────────────────────────────────────────
     PURPLE = colors.HexColor("#6C5CE7")
     GREEN  = colors.HexColor("#00B894")
     RED    = colors.HexColor("#FF6B6B")
-    DARK   = colors.HexColor("#2d2d44")
+    DARK   = colors.HexColor("#2D2D44")
+    LIGHT_GRAY = colors.HexColor("#F8F9FA")
+    BORDER_COLOR = colors.HexColor("#E9ECEF")
 
-    title_style = ParagraphStyle("title", fontSize=22, textColor=PURPLE,
-                                  alignment=TA_CENTER, spaceAfter=6, fontName="Helvetica-Bold")
-    h2_style    = ParagraphStyle("h2", fontSize=14, textColor=DARK,
-                                  spaceBefore=12, spaceAfter=4, fontName="Helvetica-Bold")
-    normal_style = styles["Normal"]
+    title_style = ParagraphStyle("title", fontSize=24, textColor=PURPLE,
+                                  alignment=TA_CENTER, spaceAfter=4, fontName="Helvetica-Bold")
+    subtitle_style = ParagraphStyle("subtitle", fontSize=10, textColor=colors.HexColor("#6C757D"),
+                                     alignment=TA_CENTER, spaceAfter=15, fontName="Helvetica")
+    h2_style    = ParagraphStyle("h2", fontSize=13, textColor=DARK,
+                                  spaceBefore=14, spaceAfter=6, fontName="Helvetica-Bold")
+    label_style = ParagraphStyle("label", fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#495057"))
+    value_style = ParagraphStyle("value", fontSize=9, fontName="Helvetica", textColor=colors.HexColor("#212529"))
 
-    # ── Title ─────────────────────────────────────────────────────────────────
-    story.append(Paragraph("💰 Smart Finance Tracker", title_style))
-    story.append(Paragraph(f"Report for: {month or 'All Time'}  |  Generated: {date.today()}", normal_style))
-    story.append(HRFlowable(width="100%", thickness=2, color=PURPLE, spaceAfter=12))
+    # ── Progress Bar Drawing Helper ───────────────────────────────────────────
+    def make_pdf_progress_bar(pct, color):
+        pct = max(0.0, min(100.0, float(pct)))
+        d = Drawing(120, 8)
+        # Background
+        d.add(Rect(0, 0, 120, 8, fillColor=colors.HexColor("#E9ECEF"), strokeColor=None))
+        # Fill
+        fill_w = (pct / 100.0) * 120
+        if fill_w > 0:
+            d.add(Rect(0, 0, fill_w, 8, fillColor=color, strokeColor=None))
+        return d
 
-    # ── Summary table ─────────────────────────────────────────────────────────
+    # ── Title Block ───────────────────────────────────────────────────────────
+    story.append(Paragraph("💰 Smart Finance Tracker Report", title_style))
+    story.append(Paragraph(f"Period: {month or 'All Time'}  |  Generated: {date.today().strftime('%d %b %Y')}", subtitle_style))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=PURPLE, spaceAfter=15))
+
+    # ── Summary Statistics Grid ───────────────────────────────────────────────
     story.append(Paragraph("Financial Summary", h2_style))
-    sum_data = [
-        ["Metric", "Amount"],
-        ["Total Income (All Time)",  fmt_currency(summary["total_income"],  currency_symbol)],
-        ["Total Expense (All Time)", fmt_currency(summary["total_expense"], currency_symbol)],
-        ["Net Savings (All Time)",   fmt_currency(summary["net_savings"],   currency_symbol)],
-        [f"Income ({month or 'This Month'})",   fmt_currency(summary["month_income"],  currency_symbol)],
-        [f"Expense ({month or 'This Month'})",  fmt_currency(summary["month_expense"], currency_symbol)],
-        [f"Savings ({month or 'This Month'})",  fmt_currency(summary["month_savings"], currency_symbol)],
+    
+    savings_rate = (summary["month_savings"] / summary["month_income"] * 100) if summary["month_income"] > 0 else 0.0
+    
+    stat_data = [
+        [
+            Paragraph("<b>Total Income (All Time)</b>", label_style),
+            Paragraph(fmt_currency(summary["total_income"], currency_symbol), value_style),
+            Paragraph(f"<b>Income ({month or 'This Month'})</b>", label_style),
+            Paragraph(fmt_currency(summary["month_income"], currency_symbol), value_style),
+        ],
+        [
+            Paragraph("<b>Total Expenses (All Time)</b>", label_style),
+            Paragraph(fmt_currency(summary["total_expense"], currency_symbol), value_style),
+            Paragraph(f"<b>Expenses ({month or 'This Month'})</b>", label_style),
+            Paragraph(fmt_currency(summary["month_expense"], currency_symbol), value_style),
+        ],
+        [
+            Paragraph("<b>Net Savings (All Time)</b>", label_style),
+            Paragraph(fmt_currency(summary["net_savings"], currency_symbol), value_style),
+            Paragraph(f"<b>Savings ({month or 'This Month'})</b>", label_style),
+            Paragraph(fmt_currency(summary["month_savings"], currency_symbol), value_style),
+        ],
+        [
+            Paragraph("", label_style), Paragraph("", value_style),
+            Paragraph("<b>Savings Rate</b>", label_style),
+            Paragraph(f"{savings_rate:.1f}%", value_style),
+        ]
     ]
-    tbl = Table(sum_data, colWidths=[10*cm, 7*cm])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",  (0, 0), (-1, 0), PURPLE),
-        ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",    (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN",       (1, 0), (1, -1), "RIGHT"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f8ff")]),
-        ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#ddd")),
-        ("TOPPADDING",  (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
+    
+    stat_table = Table(stat_data, colWidths=[5*cm, 4*cm, 5*cm, 4*cm])
+    stat_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GRAY),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
     ]))
-    story.append(tbl)
-    story.append(Spacer(1, 0.5*cm))
+    story.append(stat_table)
+    story.append(Spacer(1, 0.4*cm))
 
-    # ── Recent transactions table ─────────────────────────────────────────────
+    # ── Savings Goals Table ───────────────────────────────────────────────────
+    goals = get_goals(user_id)
+    if goals:
+        story.append(Paragraph("Savings Goals Progress", h2_style))
+        g_data = [["Goal Name", "Target", "Saved", "Progress %", "Visual Bar", "Deadline"]]
+        
+        for g in goals:
+            pct = (g["saved_amount"] / g["target_amount"] * 100) if g["target_amount"] else 0.0
+            g_data.append([
+                g["name"],
+                fmt_currency(g["target_amount"], currency_symbol),
+                fmt_currency(g["saved_amount"], currency_symbol),
+                f"{pct:.1f}%",
+                make_pdf_progress_bar(pct, GREEN if pct >= 80 else PURPLE),
+                g.get("deadline", "—") or "—"
+            ])
+            
+        g_table = Table(g_data, colWidths=[4.5*cm, 3*cm, 3*cm, 2.2*cm, 3.2*cm, 2.1*cm])
+        g_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), GREEN),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GRAY]),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(g_table)
+        story.append(Spacer(1, 0.4*cm))
+
+    # ── Recent Transactions Table ─────────────────────────────────────────────
     story.append(Paragraph("Recent Transactions (Last 20)", h2_style))
     filters = {"month": month} if month else {}
     df = get_df(user_id, filters)
@@ -204,55 +276,30 @@ def export_pdf(user_id: int, month: str = None, currency_symbol: str = "₹") ->
                 row["type"].capitalize(),
                 row["category"],
                 fmt_currency(row["amount"], currency_symbol),
-                str(row.get("note", "") or "")[:30],
+                str(row.get("note", "") or "")[:28],
             ])
-        txn_tbl = Table(txn_data, colWidths=[3*cm, 2.5*cm, 3.5*cm, 3.5*cm, 4.5*cm])
+        txn_tbl = Table(txn_data, colWidths=[3.2*cm, 2.3*cm, 3.5*cm, 3.5*cm, 5.5*cm])
         txn_tbl.setStyle(TableStyle([
             ("BACKGROUND",  (0, 0), (-1, 0), DARK),
             ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
             ("FONTNAME",    (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE",    (0, 0), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5ff")]),
-            ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#ddd")),
-            ("TOPPADDING",  (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
-        ]))
-        story.append(txn_tbl)
-    else:
-        story.append(Paragraph("No transactions found.", normal_style))
-
-    # ── Goals ─────────────────────────────────────────────────────────────────
-    goals = get_goals(user_id)
-    if goals:
-        story.append(Spacer(1, 0.5*cm))
-        story.append(Paragraph("Savings Goals", h2_style))
-        g_data = [["Goal", "Target", "Saved", "Progress %", "Deadline"]]
-        for g in goals:
-            pct = (g["saved_amount"] / g["target_amount"] * 100) if g["target_amount"] else 0
-            g_data.append([
-                g["name"],
-                fmt_currency(g["target_amount"], currency_symbol),
-                fmt_currency(g["saved_amount"],  currency_symbol),
-                f"{pct:.1f}%",
-                g.get("deadline", "—") or "—",
-            ])
-        g_tbl = Table(g_data, colWidths=[5*cm, 3.5*cm, 3.5*cm, 3*cm, 3*cm])
-        g_tbl.setStyle(TableStyle([
-            ("BACKGROUND",  (0, 0), (-1, 0), GREEN),
-            ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
-            ("FONTNAME",    (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",    (0, 0), (-1, -1), 9),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f0fff8")]),
-            ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#ddd")),
+            ("ALIGN",       (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GRAY]),
+            ("GRID",        (0, 0), (-1, -1), 0.5, BORDER_COLOR),
             ("TOPPADDING",  (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
         ]))
-        story.append(g_tbl)
+        story.append(txn_tbl)
+    else:
+        story.append(Paragraph("No transactions recorded for this period.", value_style))
 
     # ── Footer ────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, cm))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#ddd")))
-    story.append(Paragraph("Smart Finance Tracker — Confidential Report", normal_style))
+    story.append(Spacer(1, 0.8*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR, spaceAfter=8))
+    footer_style = ParagraphStyle("footer", fontSize=8, textColor=colors.HexColor("#868E96"), alignment=TA_CENTER)
+    story.append(Paragraph("Smart Finance Tracker © v2.0 • Generated Securely and Locally", footer_style))
 
     doc.build(story)
     return output.getvalue()

@@ -405,13 +405,13 @@ def _check_duplicates(transactions: list, user_id: int) -> tuple:
     existing = get_transactions(user_id)
     existing_set = set()
     for e in existing:
-        key = (str(e["trans_date"])[:10], float(e["amount"]), e.get("note", "")[:30])
+        key = (str(e["trans_date"])[:10], float(e["amount"]), e.get("note", "")[:30].strip())
         existing_set.add(key)
 
     new_txns = []
     dup_txns = []
     for t in transactions:
-        key = (str(t["trans_date"])[:10], float(t["amount"]), str(t.get("note", ""))[:30])
+        key = (str(t["trans_date"])[:10], float(t["amount"]), str(t.get("note", ""))[:30].strip())
         if key in existing_set:
             dup_txns.append(t)
         else:
@@ -419,6 +419,37 @@ def _check_duplicates(transactions: list, user_id: int) -> tuple:
             existing_set.add(key)  # Prevent self-duplicates in batch
 
     return new_txns, dup_txns
+
+
+def flag_duplicate_transactions_in_df(df: pd.DataFrame, user_id: int) -> pd.DataFrame:
+    """Add a 'Status' column flagging transactions that already exist in the database."""
+    if df.empty:
+        return df.copy()
+    
+    existing = get_transactions(user_id)
+    existing_set = set()
+    for e in existing:
+        key = (str(e["trans_date"])[:10], float(e["amount"]), str(e.get("note") or "")[:30].strip())
+        existing_set.add(key)
+    
+    df_flagged = df.copy()
+    statuses = []
+    seen_in_batch = set()
+    
+    for _, row in df_flagged.iterrows():
+        note = str(row.get("note", "") or "")[:30].strip()
+        key = (str(row["trans_date"])[:10], float(row["amount"]), note)
+        
+        if key in existing_set:
+            statuses.append("Duplicate (Exists)")
+        elif key in seen_in_batch:
+            statuses.append("Duplicate (File)")
+        else:
+            statuses.append("New")
+            seen_in_batch.add(key)
+            
+    df_flagged["Status"] = statuses
+    return df_flagged
 
 
 # ══════════════════════════════════════════════════════════════════════════════

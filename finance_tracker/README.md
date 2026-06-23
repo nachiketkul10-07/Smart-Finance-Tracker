@@ -1,7 +1,7 @@
-# 💰 Smart Finance Tracker
+# 💰 Smart Finance Tracker v2.0
 
 A **production-quality**, fully local Personal Finance Manager built with Python + Streamlit.  
-No API keys. No cloud. Everything runs on your machine.
+No API keys. No cloud. Everything runs locally on your machine.
 
 ---
 
@@ -10,16 +10,17 @@ No API keys. No cloud. Everything runs on your machine.
 | Feature | Description |
 |---|---|
 | 🔐 Auth | Register / Login / Logout with bcrypt password hashing |
-| 🏠 Dashboard | KPI cards, recent transactions, monthly summary |
-| 💸 Transactions | Add, edit, delete income & expenses with auto-category detection |
-| 📊 Analytics | 7 interactive Plotly charts (trend, pie, bar, savings) |
-| 📋 Budget Planner | Set monthly budgets with progress bars & alerts |
-| 🎯 Savings Goals | Create goals with ETA estimation |
-| 🤖 AI Insights | 10+ smart rule-based insights + ML expense prediction |
-| 🔄 Recurring | Set up salary, rent, subscriptions as recurring entries |
-| 📤 Export | Download Excel (.xlsx) and PDF reports |
-| ⚙️ Settings | Currency selection, theme, profile, data backup |
-| 🎲 Demo Data | One-click sample data loader |
+| 🏠 Dashboard | KPI cards, growth MoM deltas, financial health score, best/worst month stats, recent transactions |
+| 💸 Transactions | Add, edit, duplicate, search, sort, and tag income & expenses with auto-category detection |
+| 📊 Analytics | 10 interactive Plotly charts (trend, pie, bar, savings, regression prediction, monthly/yearly summaries, category comparisons) |
+| 📋 Budget Planner | Set category budgets with progress bars, overall utilization card, and overspending warnings |
+| 🎯 Savings Goals | Priority ranking, target date, days remaining, target completion prediction using 3-month savings average, track status |
+| 🤖 AI Insights | Offline rule-based insights, risk alerts, subscription alerts, weekend analysis, and ML expense prediction |
+| 🔄 Recurring | Templates for auto-debit, subscriptions, and salary with weekly/monthly frequency |
+| 📥 Import Pipeline | Parse bank statements (CSV/Excel/PDF for 14+ banks), UPI screenshots (local Tesseract OCR), or Gmail alert synchronization with pre-save duplicate checking |
+| 📤 Export | Download professionally styled Excel (.xlsx) and PDF reports with stats tables and progress bars |
+| ⚙️ Settings | Currency selection, light/dark preference, profile information, and SQLite (.db) / JSON backup & restore |
+| 🎲 Demo Data | One-click sample data loader for testing dashboard and analytics |
 
 ---
 
@@ -27,19 +28,22 @@ No API keys. No cloud. Everything runs on your machine.
 
 ```
 finance_tracker/
-├── app.py                  # Main Streamlit app + all page routers
-├── database.py             # SQLite schema + all CRUD helpers
-├── auth.py                 # Registration, login, bcrypt hashing
-├── analytics.py            # Pandas aggregations + Plotly charts
-├── ai_insights.py          # Rule-based + sklearn insights engine
-├── export_utils.py         # Excel (xlsxwriter) + PDF (reportlab) export
-├── utils.py                # Constants, category maps, sample data
-├── requirements.txt        # Python dependencies
+├── app.py                  # Main Streamlit UI, routing, page view templates
+├── database.py             # SQLite database schemas, CRUD operations, backup/restore helpers
+├── auth.py                 # User auth logic, password hashing, session management
+├── analytics.py            # Pandas calculations, cached query aggregates, Plotly charts
+├── ai_insights.py          # Local rules-based engine, alerts, regression forecast model
+├── bank_parser.py          # Column normalizer, multi-format (CSV/Excel/PDF) bank statement parser, duplicate flagger
+├── ocr_parser.py           # Screenshot text extractor using local Tesseract OCR engine
+├── gmail_parser.py         # Gmail read-only OAuth credentials, fetch alerts, sync transactions
+├── export_utils.py         # Formatted Excel exporter, ReportLab PDF layout generator
+├── utils.py                # Helpers, input validation rules, constants, sample dataset
+├── requirements.txt        # Python package dependencies
 ├── README.md               # This file
 ├── assets/
-│   └── style.css           # Premium dark-mode CSS theme
+│   └── style.css           # Premium dark-mode styling variables and UI components
 └── data/
-    └── finance.db          # SQLite database (auto-created on first run)
+    └── finance.db          # SQLite local database file (auto-initialized and migrated)
 ```
 
 ---
@@ -53,7 +57,7 @@ git clone <repo-url>
 cd finance_tracker
 ```
 
-### 2. Create a virtual environment (recommended)
+### 2. Create a virtual environment
 
 ```bash
 python -m venv venv
@@ -71,7 +75,11 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Run the app
+### 4. Install Tesseract OCR (Optional — for UPI Screenshot upload)
+- Download and install Tesseract OCR for your system (e.g., from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)).
+- Add Tesseract to your PATH or verify its installation to enable UPI payment screenshot reading.
+
+### 5. Run the app
 
 ```bash
 streamlit run app.py
@@ -84,109 +92,47 @@ The app opens automatically at **http://localhost:8501**
 ## 🖥️ Screen Guide
 
 ### Auth Screen
-- **Register** a new account (username, email, password)
-- **Login** with your credentials
-- Passwords are hashed with bcrypt — never stored in plain text
+- **Register** a new account with username, email, password.
+- **Login** with secure bcrypt credentials validation.
 
 ### Dashboard
-- See total income, expenses, net savings at a glance
-- Current month KPIs with savings rate
-- Income vs Expense bar chart + category pie chart
-- Scrollable recent transactions list
+- Comprehensive metrics header showing Income, Expenses, Net Savings, and Month Growth deltas.
+- **Advanced Stats**: Financial Health Score (0-100), Top Category, Best/Worst month, and Expense/Savings Trend indicators.
+- Donut & Grouped Bar interactive charts for visual breakdowns.
+- Activity feed showing recent transaction logs.
 
 ### Transactions
-- **Add** income or expenses with date, category, payment mode, notes
-- **Auto-detect** category from note keywords (e.g. "Swiggy" → Food)
-- **Quick Add** buttons for common expenses
-- **Filter** by month, category, type, or search by note
-- **Edit** any transaction inline
-- **Delete** with one click
+- **Add Transactions**: Input amount, select category, select date/payment mode, add description and comma-separated tags.
+- **Manage Transactions**: Search note/tags, filter by category/month/type, and sort (newest, oldest, highest, lowest).
+- **Edit / Duplicate**: Easily clone or update existing transactions without losing context.
+- **Bulk Delete**: Safely select multiple items and delete them in one action.
 
-### Analytics
-- Monthly expense trend (line chart)
-- Income vs Expense grouped bar (last 6 months)
-- Category pie/donut chart
-- Top spending categories (horizontal bar)
-- Cumulative savings trend
-- Daily spending calendar
-- Payment mode distribution
+### Import Transactions
+- **Bank Statement**: Import PDF, CSV, or Excel net banking exports. Auto-detects column mappings and banks. Checks for duplicates and alerts you before importing.
+- **UPI Screenshot**: Upload screenshots from Google Pay, PhonePe, Paytm, CRED, etc. Extracts merchant, amount, date using local OCR.
+- **Gmail Sync**: Authenticate with Gmail OAuth to pull transactions directly from your email alerts.
 
 ### Budget Planner
-- Set per-category monthly budgets
-- Visual progress bars (green → yellow → red as you approach/exceed)
-- Warning when budget is 80%+ used
-- Over-budget alert
+- Set monthly limits per category.
+- Displays an **Overall Budget Utilization** progress indicator.
+- Highlights approaching and over-budget limits using warning banners.
 
 ### Savings Goals
-- Create goals with target, current saved, and deadline
-- Progress bar with %
-- ETA estimation based on your last 3 months average savings
+- Set target amount, deadline, and priority rank (High, Medium, Low).
+- Shows progress bar, remaining amount, and days remaining.
+- Predicts completion dates based on a rolling 3-month savings average.
+- Indicators display if goals are **On Track** or **Off Track**.
 
-### AI Insights
-- Category spending change vs last month
-- Top spending category
-- Unusual high expense detection (2.5x average)
-- Budget exceeded warnings
-- Linear regression–based month-end expense prediction
-- Best day of week (lowest spending)
-- Savings rate feedback
-- Weekend vs weekday spending analysis
-- Subscription cost alert
+### AI Insights (100% Local)
+- Deep analysis of spending patterns compared to the previous month.
+- Detects recurring subscription bills and anomalous spikes (2.5x mean).
+- Recommends optimizations for weekend/weekday habits.
+- Predicts end-of-month expenses using scikit-learn Linear Regression.
 
-### Recurring Transactions
-- Save templates for salary, rent, Netflix, etc.
-- Choose monthly or weekly frequency
-- Set next due date
-
-### Export
-- **Excel**: 3 sheets — Transactions, Summary, Goals (styled with xlsxwriter)
-- **PDF**: Professional A4 report with summary table, recent transactions, goals
-
-### Settings
-- Change display currency (INR, USD, EUR, GBP, JPY)
-- View profile details
-- Reset all financial data (with confirmation)
-- Download database backup (.db file)
-
----
-
-## 🔮 AI Insights (No API)
-
-The insights engine works entirely offline using:
-
-1. **Pandas rules** — compares current month vs previous month per category
-2. **Statistical thresholds** — flags transactions > 2.5x the monthly average
-3. **Budget tracking** — reads your set budgets and compares against actual spend
-4. **scikit-learn LinearRegression** — fits a cumulative spending curve to predict end-of-month total
-5. **Day-of-week analysis** — finds your cheapest and most expensive days
-
----
-
-## 📦 Dependencies
-
-| Package | Purpose |
-|---|---|
-| `streamlit` | Web UI framework |
-| `pandas` | Data processing |
-| `plotly` | Interactive charts |
-| `bcrypt` | Password hashing |
-| `openpyxl` / `xlsxwriter` | Excel export |
-| `reportlab` | PDF export |
-| `scikit-learn` | Expense prediction |
-| `numpy` | Numerical ops |
-
----
-
-## 🛠️ Future Improvements
-
-- [ ] Multi-currency conversion with live rates
-- [ ] Bank statement CSV import
-- [ ] Email report scheduling
-- [ ] Mobile PWA wrapper
-- [ ] Budget vs actual line chart overlay
-- [ ] Investment portfolio tracker
-- [ ] Tax report generator
-- [ ] Dark/light theme toggle in UI
+### Settings & Backup
+- Save preferences such as display currency and base theme.
+- **JSON Backup**: Download a clean, portable backup JSON and restore it at any time with a click.
+- **SQLite Database**: Download a raw database copy (.db) for backup/migrations.
 
 ---
 

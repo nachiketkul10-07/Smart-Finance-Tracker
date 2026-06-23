@@ -6,6 +6,7 @@ currency formatters, and the sample demo data loader.
 """
 
 import random
+import re
 from datetime import date, timedelta
 from database import add_transaction, add_goal, set_budget
 
@@ -211,3 +212,36 @@ def load_sample_data(user_id: int):
     add_goal(user_id, "New Laptop",       80000, 20000, (today + timedelta(days=180)).isoformat())
     add_goal(user_id, "Goa Trip",         25000,  8000, (today + timedelta(days=90)).isoformat())
     add_goal(user_id, "iPhone Upgrade",  100000,  5000, (today + timedelta(days=300)).isoformat())
+
+
+# ── Input Validations ─────────────────────────────────────────────────────────
+
+def validate_amount(amount: float) -> tuple[bool, str]:
+    """Validate currency/amount inputs."""
+    try:
+        val = float(amount)
+        if val <= 0:
+            return False, "Amount must be greater than zero."
+        if val > 1_000_000_000:
+            return False, "Amount is too large (maximum 1,000,000,000)."
+        return True, ""
+    except (ValueError, TypeError):
+        return False, "Invalid number format."
+
+
+def validate_note(note: str) -> tuple[bool, str]:
+    """Validate note text inputs."""
+    if not note:
+        return True, ""  # Optional field
+    if len(note) > 100:
+        return False, "Note must be 100 characters or less."
+    return True, ""
+
+
+def validate_email_format(email: str) -> bool:
+    """Validate email address format using regex."""
+    if not email:
+        return False
+    # Simple regex check for email
+    return bool(re.match(r"^[^@]+@[^@]+\.[^@]+$", email.strip()))
+

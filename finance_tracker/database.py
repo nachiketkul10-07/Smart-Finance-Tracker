@@ -25,7 +25,7 @@ def get_connection():
 
 # ── Schema creation (idempotent) ─────────────────────────────────────────────
 def init_db():
-    """Create all tables if they don't already exist."""
+    """Create all tables if they don't already exist and apply migrations."""
     conn = get_connection()
     c = conn.cursor()
 
@@ -110,6 +110,19 @@ def init_db():
         )
     """)
 
+    # ── Migrations / Alter columns if they don't exist ────────────────────────
+    # Check transactions columns
+    c.execute("PRAGMA table_info(transactions)")
+    txn_cols = [row[1] for row in c.fetchall()]
+    if "tags" not in txn_cols:
+        c.execute("ALTER TABLE transactions ADD COLUMN tags TEXT")
+
+    # Check goals columns
+    c.execute("PRAGMA table_info(goals)")
+    goal_cols = [row[1] for row in c.fetchall()]
+    if "priority" not in goal_cols:
+        c.execute("ALTER TABLE goals ADD COLUMN priority TEXT DEFAULT 'Medium'")
+
     conn.commit()
     conn.close()
 
@@ -189,15 +202,15 @@ def update_settings(user_id: int, currency: str, theme: str):
 # TRANSACTION helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def add_transaction(user_id, type_, amount, category, note, payment_mode, trans_date, is_recurring=0):
+def add_transaction(user_id, type_, amount, category, note, payment_mode, trans_date, is_recurring=0, tags=None):
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO transactions
-               (user_id,type,amount,category,note,payment_mode,trans_date,is_recurring)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (user_id,type,amount,category,note,payment_mode,trans_date,is_recurring,tags)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (user_id, type_, float(amount), category, note, payment_mode,
-             str(trans_date), is_recurring)
+             str(trans_date), is_recurring, tags)
         )
         conn.commit()
     finally:
@@ -207,7 +220,7 @@ def add_transaction(user_id, type_, amount, category, note, payment_mode, trans_
 def get_transactions(user_id: int, filters: dict = None):
     """
     Return all transactions for a user, optionally filtered.
-    filters keys: type, category, month (YYYY-MM), search (note contains)
+    filters keys: type, category, month (YYYY-MM), search (note/tag/category contains), tag
     """
     conn = get_connection()
     try:
@@ -223,9 +236,14 @@ def get_transactions(user_id: int, filters: dict = None):
             if filters.get("month"):
                 query += " AND strftime('%Y-%m', trans_date) = ?"
                 params.append(filters["month"])
+            if filters.get("tag"):
+                query += " AND tags LIKE ?"
+                params.append(f"%{filters['tag']}%")
             if filters.get("search"):
-                query += " AND note LIKE ?"
-                params.append(f"%{filters['search']}%")
+                # Enhanced search looking at notes, categories, and tags
+                query += " AND (note LIKE ? OR category LIKE ? OR tags LIKE ?)"
+                search_val = f"%{filters['search']}%"
+                params.extend([search_val, search_val, search_val])
         query += " ORDER BY trans_date DESC, id DESC"
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
@@ -235,7 +253,7 @@ def get_transactions(user_id: int, filters: dict = None):
 
 def update_transaction(trans_id: int, user_id: int, **kwargs):
     """Update allowed fields on a transaction row."""
-    allowed = {"type", "amount", "category", "note", "payment_mode", "trans_date"}
+    allowed = {"type", "amount", "category", "note", "payment_mode", "trans_date", "tags"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -305,12 +323,12 @@ def delete_budget(budget_id: int, user_id: int):
 # GOALS helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def add_goal(user_id, name, target_amount, saved_amount=0, deadline=None):
+def add_goal(user_id, name, target_amount, saved_amount=0, deadline=None, priority="Medium"):
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO goals (user_id,name,target_amount,saved_amount,deadline) VALUES (?,?,?,?,?)",
-            (user_id, name, target_amount, saved_amount, deadline)
+            "INSERT INTO goals (user_id,name,target_amount,saved_amount,deadline,priority) VALUES (?,?,?,?,?,?)",
+            (user_id, name, target_amount, saved_amount, deadline, priority)
         )
         conn.commit()
     finally:
@@ -328,12 +346,19 @@ def get_goals(user_id: int) -> list:
         conn.close()
 
 
-def update_goal(goal_id: int, user_id: int, saved_amount: float):
+def update_goal(goal_id: int, user_id: int, saved_amount: float, **kwargs):
+    """Update goal fields dynamically."""
+    allowed = {"saved_amount", "name", "target_amount", "deadline", "priority"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    updates["saved_amount"] = saved_amount
+    
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    params = list(updates.values()) + [goal_id, user_id]
+    
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE goals SET saved_amount=? WHERE id=? AND user_id=?",
-            (saved_amount, goal_id, user_id)
+            f"UPDATE goals SET {set_clause} WHERE id=? AND user_id=?", params
         )
         conn.commit()
     finally:
@@ -393,8 +418,93 @@ def delete_recurring(rec_id: int, user_id: int):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESET / WIPE
+# BACKUP, RESTORE & RESET
 # ══════════════════════════════════════════════════════════════════════════════
+
+def backup_user_data(user_id: int) -> dict:
+    """Export all financial data for a user as a dictionary."""
+    conn = get_connection()
+    try:
+        data = {}
+        for table in ("transactions", "budgets", "goals", "recurring_transactions", "settings"):
+            rows = conn.execute(f"SELECT * FROM {table} WHERE user_id=?", (user_id,)).fetchall()
+            data[table] = [dict(r) for r in rows]
+        return data
+    finally:
+        conn.close()
+
+
+def restore_user_data(user_id: int, data: dict) -> bool:
+    """Restore all financial data for a user from a dictionary, overwriting existing data."""
+    if not isinstance(data, dict):
+        return False
+    
+    expected_tables = ("transactions", "budgets", "goals", "recurring_transactions", "settings")
+    if not any(t in data for t in expected_tables):
+        return False
+    
+    conn = get_connection()
+    try:
+        # First wipe existing data
+        for table in expected_tables:
+            conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+        
+        c = conn.cursor()
+        
+        # 1. Restore settings
+        if "settings" in data:
+            for r in data["settings"]:
+                c.execute(
+                    "INSERT INTO settings (user_id, currency, theme) VALUES (?, ?, ?)",
+                    (user_id, r.get("currency", "INR"), r.get("theme", "dark"))
+                )
+        
+        # 2. Restore transactions
+        if "transactions" in data:
+            for r in data["transactions"]:
+                c.execute(
+                    """INSERT INTO transactions
+                       (user_id, type, amount, category, note, payment_mode, trans_date, is_recurring, tags)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, r["type"], r["amount"], r["category"], r.get("note"),
+                     r.get("payment_mode", "Cash"), r["trans_date"], r.get("is_recurring", 0), r.get("tags"))
+                )
+        
+        # 3. Restore budgets
+        if "budgets" in data:
+            for r in data["budgets"]:
+                c.execute(
+                    "INSERT INTO budgets (user_id, category, month, amount) VALUES (?, ?, ?, ?)",
+                    (user_id, r["category"], r["month"], r["amount"])
+                )
+                
+        # 4. Restore goals
+        if "goals" in data:
+            for r in data["goals"]:
+                c.execute(
+                    "INSERT INTO goals (user_id, name, target_amount, saved_amount, deadline, priority) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, r["name"], r["target_amount"], r.get("saved_amount", 0), r.get("deadline"), r.get("priority", "Medium"))
+                )
+                
+        # 5. Restore recurring_transactions
+        if "recurring_transactions" in data:
+            for r in data["recurring_transactions"]:
+                c.execute(
+                    """INSERT INTO recurring_transactions
+                       (user_id, type, amount, category, note, payment_mode, frequency, next_date, active)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, r["type"], r["amount"], r["category"], r.get("note"),
+                     r.get("payment_mode", "Auto-Debit"), r.get("frequency", "monthly"), r.get("next_date"), r.get("active", 1))
+                )
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
 
 def reset_user_data(user_id: int):
     """Delete all financial data for a user (keep account)."""
