@@ -13,6 +13,7 @@ from datetime import date, timedelta, datetime
 import sys
 import os
 import json
+import math
 
 # Add current directory to path for local module imports in deployed environments
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -912,7 +913,7 @@ def page_goals():
                     eta = "Goal Achieved! 🎉"
                 elif avg_save > 0:
                     daily_save = avg_save / 30.437 # average days in a month
-                    days_needed = int(np.ceil(remain / daily_save))
+                    days_needed = int(math.ceil(remain / daily_save))
                     comp_date = date.today() + timedelta(days=days_needed)
                     eta = f"Est. Completion: {comp_date.strftime('%d %b %Y')} (~{days_needed} days remaining, at {fmt_currency(avg_save, sym)}/mo savings)"
                     
