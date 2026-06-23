@@ -10,8 +10,12 @@ with helper rendering components kept modular.
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
+import sys
 import os
 import json
+
+# Add current directory to path for local module imports in deployed environments
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ── Project imports ───────────────────────────────────────────────────────────
 from database import (
