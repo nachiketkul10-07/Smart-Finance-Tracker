@@ -54,11 +54,19 @@ def _get_df_cached(user_id: int, trigger_key: str, filters_tuple: tuple) -> pd.D
             "note", "payment_mode", "trans_date", "created_at"
         ])
     df = pd.DataFrame(rows)
-    df["trans_date"] = pd.to_datetime(df["trans_date"])
+    # Robust date parsing: handle multiple formats, coerce errors to NaT
+    df["trans_date"] = pd.to_datetime(df["trans_date"], errors="coerce", dayfirst=True)
+    # Drop rows with unparseable dates
+    df = df.dropna(subset=["trans_date"])
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "id", "user_id", "type", "amount", "category",
+            "note", "payment_mode", "trans_date", "created_at"
+        ])
     df["month"]      = df["trans_date"].dt.strftime("%Y-%m")
     df["month_name"] = df["trans_date"].dt.strftime("%b %Y")
     df["day_name"]   = df["trans_date"].dt.strftime("%A")
-    df["amount"]     = df["amount"].astype(float)
+    df["amount"]     = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     return df
 
 
@@ -589,7 +597,8 @@ def get_category_comparison(user_id: int) -> pd.DataFrame:
             "difference": diff,
             "change_pct": round(pct, 1)
         })
-        
+    if not rows:
+        return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("difference", ascending=False)
 
 

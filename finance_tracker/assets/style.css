@@ -424,3 +424,180 @@ button[data-baseweb="tab"][aria-selected="true"] {
 .text-muted  { color: var(--text-secondary) !important; }
 .bold        { font-weight: 700 !important; }
 .mono        { font-family: 'Courier New', monospace !important; }
+
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — Tablet (≤768px) & Phone (≤480px)
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Tablet breakpoint ─────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    /* Reduce container padding */
+    .main .block-container {
+        padding: 1rem 1rem 2rem 1rem !important;
+        max-width: 100% !important;
+    }
+
+    /* Sidebar: auto-collapse on mobile */
+    [data-testid="stSidebar"] {
+        min-width: 200px !important;
+        max-width: 240px !important;
+    }
+
+    /* Page titles */
+    .page-title {
+        font-size: 1.3rem !important;
+    }
+    .page-sub {
+        font-size: 0.78rem !important;
+    }
+
+    /* KPI cards — stack in 2 columns instead of 4+ */
+    .kpi-card {
+        padding: 0.8rem !important;
+        min-height: auto !important;
+    }
+    .kpi-value {
+        font-size: 1.1rem !important;
+    }
+    .kpi-label {
+        font-size: 0.7rem !important;
+    }
+
+    /* Streamlit columns: force wrapping on mobile */
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        gap: 0.5rem !important;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 45% !important;
+        flex: 1 1 45% !important;
+    }
+
+    /* Cards */
+    .card {
+        padding: 1rem !important;
+        border-radius: 10px !important;
+    }
+    .card-title {
+        font-size: 0.85rem !important;
+    }
+
+    /* Charts: constrain height */
+    [data-testid="stPlotlyChart"] {
+        max-height: 300px !important;
+    }
+
+    /* Tables: horizontal scroll */
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    /* Auth card */
+    .auth-card {
+        margin: 2rem 0.5rem !important;
+        padding: 1.5rem !important;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        font-size: 0.8rem !important;
+        padding: 0.4rem 0.8rem !important;
+    }
+}
+
+/* ── Phone breakpoint ──────────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+    .main .block-container {
+        padding: 0.5rem 0.5rem 1.5rem 0.5rem !important;
+    }
+
+    /* Sidebar: full overlay on very small screens */
+    [data-testid="stSidebar"] {
+        min-width: 180px !important;
+        max-width: 200px !important;
+    }
+
+    .page-title {
+        font-size: 1.1rem !important;
+    }
+
+    /* Force single column layout */
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    /* KPI cards: full width single column */
+    .kpi-card {
+        padding: 0.6rem !important;
+        margin-bottom: 0.3rem !important;
+    }
+    .kpi-value {
+        font-size: 1rem !important;
+    }
+    .kpi-icon {
+        font-size: 1.1rem !important;
+    }
+
+    /* Auth card */
+    .auth-card {
+        margin: 1rem 0.25rem !important;
+        padding: 1.2rem !important;
+        border-radius: 14px !important;
+    }
+    .auth-title {
+        font-size: 1.2rem !important;
+    }
+
+    /* Brand sidebar */
+    .brand-name {
+        font-size: 0.95rem !important;
+    }
+    .brand-icon {
+        font-size: 1.4rem !important;
+    }
+
+    /* Text inputs */
+    .stTextInput input, .stSelectbox select, .stNumberInput input {
+        font-size: 0.85rem !important;
+    }
+
+    /* Plotly charts: even smaller */
+    [data-testid="stPlotlyChart"] {
+        max-height: 250px !important;
+    }
+
+    /* Dataframe: font size */
+    [data-testid="stDataFrame"] {
+        font-size: 0.75rem !important;
+    }
+}
+
+/* ── Touch-friendly improvements ───────────────────────────────────────────── */
+@media (hover: none) and (pointer: coarse) {
+    /* Larger tap targets on touch devices */
+    .stButton > button {
+        min-height: 44px !important;
+        min-width: 44px !important;
+    }
+    .stRadio > label,
+    .stCheckbox > label {
+        padding: 0.4rem 0 !important;
+        min-height: 40px !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+
+    /* Prevent zooming on input focus (iOS) */
+    input, select, textarea {
+        font-size: 16px !important;
+    }
+
+    /* Smooth scrolling */
+    .main {
+        -webkit-overflow-scrolling: touch !important;
+        scroll-behavior: smooth !important;
+    }
+}

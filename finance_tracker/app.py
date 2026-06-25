@@ -61,6 +61,12 @@ css_path = os.path.join(os.path.dirname(__file__), "assets", "style.css")
 with open(css_path) as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
+# ── Mobile viewport ───────────────────────────────────────────────────────────
+st.markdown(
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">',
+    unsafe_allow_html=True
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPER COMPONENTS
