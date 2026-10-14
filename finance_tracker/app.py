@@ -1671,7 +1671,7 @@ def main():
 
 if __name__ == "__main__":
     import time
-    from nexpulse_telemetry import report_page_run
+    from nexpulse_sender import report_page_run
     _started_at = time.monotonic()
     try:
         main()
