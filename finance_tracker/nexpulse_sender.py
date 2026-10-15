@@ -11,13 +11,15 @@ from uuid import uuid4
 import streamlit as st
 
 _LOG = logging.getLogger(__name__)
-_HOST = "nexplus-nachiket-space.vercel.app"
+_HOST = "nexplus-flame.vercel.app"
 _PATH = "/api/v1/telemetry/events"
+_DEFAULT_INGEST_URL = f"https://{_HOST}{_PATH}"
+
 
 def report_page_run(page_name: str, started_at: float, status_code: int = 200) -> None:
     """Report coarse page-run metadata only; never send finance/account data."""
     try:
-        endpoint = str(st.secrets.get("NEXPULSE_INGEST_URL", "")).strip()
+        endpoint = str(st.secrets.get("NEXPULSE_INGEST_URL", _DEFAULT_INGEST_URL)).strip()
         service_id = str(st.secrets.get("NEXPULSE_SERVICE_ID", "")).strip()
         key = str(st.secrets.get("NEXPULSE_INGEST_KEY", "")).strip()
     except Exception:
